@@ -1,6 +1,7 @@
 package com.sf.doctor;
 
 import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.MethodInsnNode;
 
 import java.io.*;
 import java.lang.instrument.ClassFileTransformer;
@@ -20,6 +21,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 public class Agent implements ClassFileTransformer, AutoCloseable {
 
@@ -88,11 +90,11 @@ public class Agent implements ClassFileTransformer, AutoCloseable {
     }
 
     public void run(Map<String, String> arguments) {
-        this.println(String.format("connected%n"));
-        arguments.forEach((key, value) -> this.println(String.format("key:%s value:%s%n", key, value)));
-        this.println(String.format("instrumentation:%s%n", instrumentation));
+        this.println(String.format("connected"));
+        arguments.forEach((key, value) -> this.println(String.format("key:%s value:%s", key, value)));
+        this.println(String.format("instrumentation:%s", instrumentation));
 
-        this.println(String.format("attach transformer:%s%n", this));
+        this.println(String.format("attach transformer:%s", this));
         instrumentation.addTransformer(this, true);
 
         String[] target = arguments.get("entry").split("#");
@@ -132,6 +134,8 @@ public class Agent implements ClassFileTransformer, AutoCloseable {
 
     @Override
     public void close() throws Exception {
+        this.closed = true;
+
         Agent.ENTER_HANDLE = null;
         Agent.LEAVE_HANDLE = null;
         Agent.PRINT_HANDLE = null;
@@ -141,6 +145,9 @@ public class Agent implements ClassFileTransformer, AutoCloseable {
                 touched_methods.keySet()
                         .toArray(new Class[0])
         );
+
+        // remove this
+        instrumentation.removeTransformer(this);
     }
 
     @Override
@@ -156,24 +163,25 @@ public class Agent implements ClassFileTransformer, AutoCloseable {
         RefinedClass refined = new RefinedClass(new ByteArrayInputStream(classfileBuffer));
         if (!closed) {
             Optional.ofNullable(touched_methods.get(classBeingRedefined))
-                    .ifPresent((methods) -> methods.stream()
-                            .peek((method) -> println(String.format(
-                                    "refine class:%s of method:%s",
-                                    method.getDeclaringClass(),
-                                    method)
-                            ))
-                            .flatMap(refined::profileMethod)
-                            .peek((method) -> println(String.format(
-                                    "inline profile class:%s of method:%s",
-                                    method,
-                                    method
-                            )))
-                    );
+                    .orElseGet(Collections::emptyNavigableSet).stream()
+                    .peek((method) -> println(String.format(
+                            "refine class:%s of method:%s",
+                            method.getDeclaringClass(),
+                            method)
+                    ))
+                    .flatMap(refined::profileMethod)
+                    .flatMap((node) -> Arrays.stream(instrumentation.getAllLoadedClasses())
+                            .filter((holder) -> Type.getInternalName(holder).equals(node.owner))
+                            .flatMap((holder) -> MethodLookup.findMethod(holder, node.name))
+                            .filter((method) -> Type.getMethodDescriptor(method).equals(node.desc))
+                    )
+                    .forEach(this::transformMethod);
         } else {
             println(String.format("revert class:%s", classBeingRedefined));
             refined.revert();
         }
 
+        //refined.print(this.writer);
         return refined.bytecode();
     }
 

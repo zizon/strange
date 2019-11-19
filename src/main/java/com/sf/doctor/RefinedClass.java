@@ -79,40 +79,24 @@ public class RefinedClass {
                 .orElseGet(Collections::emptyList)
                 .stream()
                 // find right method
-                .filter((node) -> node.desc.equals(Type.getType(method)))
+                .filter((node) -> node.desc.equals(Type.getType(method).getInternalName()))
                 // preserved
                 .peek((node) -> node.attrs = Optional.ofNullable(node.attrs)
                         .orElseGet(LinkedList::new))
                 // not yet mark
                 .filter((node) -> node.attrs.stream()
-                        .anyMatch((attr) -> attr.type.equals(METHOD_REFINED_MARK)))
+                        .noneMatch((attr) -> attr.type.equals(METHOD_REFINED_MARK)))
                 // mark
                 .peek((node) -> node.attrs.add(new UserDefinedAttribute(METHOD_REFINED_MARK, new byte[0])))
                 .flatMap(this::refinedMethodNode)
                 ;
     }
 
-    public void print(OutputStream output) {
-        this.clazz.accept(new TraceClassVisitor(new PrintWriter(output)));
+    public void print(PrintWriter output) {
+        this.clazz.accept(new TraceClassVisitor(output));
     }
 
-    protected Stream<MethodInsnNode> refinedMethodNode(MethodNode method) {
-        Label start = new Label();
-        Label end = new Label();
-
-        // 1. save origin instrunctions
-        InsnList origin = Optional.ofNullable(method.instructions).orElseGet(InsnList::new);
-
-        // 2. add start and end label
-        InsnList instructions = new InsnList();
-        LabelNode start_instuction = new LabelNode(start);
-        LabelNode end_instruction = new LabelNode(end);
-        instructions.add(start_instuction);
-        instructions.add(origin);
-        instructions.add(end_instruction);
-
-        // 3. insert enter
-        String signature = String.format("%s#%s;%s", this.clazz.name, method.name, method.desc);
+    protected InsnList generateEnterInstruction(String signature) {
         InsnList enter = new InsnList();
         enter.add(new LdcInsnNode(signature));
         enter.add(new MethodInsnNode(
@@ -124,10 +108,11 @@ public class RefinedClass {
                         Type.getType(String.class)
                 )
         ));
-        instructions.insert(start_instuction, enter);
+        return enter;
+    }
 
-        // 4. prepare exit instuction
-        InsnList exit = new InsnList();
+    protected InsnList generateLeaveInstruction(String signature) {
+        InsnList enter = new InsnList();
         enter.add(new LdcInsnNode(signature));
         enter.add(new MethodInsnNode(
                 Opcodes.INVOKESTATIC,
@@ -138,8 +123,26 @@ public class RefinedClass {
                         Type.getType(String.class)
                 )
         ));
+        return enter;
+    }
 
-        // 5. insert on return/throw point
+    protected Stream<MethodInsnNode> refinedMethodNode(MethodNode method) {
+        Label start = new Label();
+        Label end = new Label();
+
+        // add start and end label
+        InsnList instructions = new InsnList();
+        LabelNode start_instuction = new LabelNode(start);
+        LabelNode end_instruction = new LabelNode(end);
+        instructions.add(start_instuction);
+        instructions.add(method.instructions);
+        instructions.add(end_instruction);
+
+        // insert enter
+        String signature = String.format("%s#%s;%s", this.clazz.name, method.name, method.desc);
+        instructions.insert(start_instuction, generateEnterInstruction(signature));
+
+        // insert on return/throw point
         Arrays.stream(instructions.toArray())
                 .filter((instruction) -> {
                     switch (instruction.getOpcode()) {
@@ -156,29 +159,33 @@ public class RefinedClass {
                     return false;
                 })
                 .forEach((return_point) -> {
-                    instructions.insertBefore(return_point, exit);
+                    instructions.insertBefore(return_point, generateLeaveInstruction(signature));
                 });
 
-        // 6. add a generated try-catch-all block
+        // add a generated try-catch-all block
         List<TryCatchBlockNode> try_catches = Optional.ofNullable(method.tryCatchBlocks)
                 .orElseGet(LinkedList::new);
         try_catches.add(new TryCatchBlockNode(
                 start_instuction,
                 end_instruction,
-                end_instruction, Type.getInternalName(Throwable.class)
+                end_instruction,
+                Type.getInternalName(Throwable.class)
         ));
         method.tryCatchBlocks = try_catches;
 
-        // 7. try catch all handler
-        instructions.insert(end_instruction, exit);
+        // try catch all handler
+        InsnList catch_all = generateLeaveInstruction(signature);
+        catch_all.add(new InsnNode(Opcodes.ATHROW));
+        instructions.insert(end_instruction, catch_all);
 
-        // 8. replace
+        // replace
         method.instructions = instructions;
 
-        // 9. scan methods
-        return Arrays.stream(origin.toArray())
+        // scan methods
+        return Arrays.stream(instructions.toArray())
                 .filter((instruction) -> instruction instanceof MethodInsnNode)
                 .map(MethodInsnNode.class::cast)
+                .filter((node) -> !node.owner.equals(Type.getInternalName(Agent.class)))
                 .collect(Collectors.groupingBy(
                         (node) -> String.format("%s#%s;%s", node.owner, node.name, node.desc),
                         Collectors.reducing((left, right) -> left)
@@ -186,7 +193,8 @@ public class RefinedClass {
                 .values()
                 .stream()
                 .filter(Optional::isPresent)
-                .map(Optional::get);
+                .map(Optional::get)
+                ;
     }
 
     protected ClassNode newClassNode(InputStream bytecode) {
