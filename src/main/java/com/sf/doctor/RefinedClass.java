@@ -101,7 +101,7 @@ public class RefinedClass {
         enter.add(new LdcInsnNode(signature));
         enter.add(new MethodInsnNode(
                 Opcodes.INVOKESTATIC,
-                Type.getInternalName(Agent.class),
+                Type.getInternalName(Bridge.class),
                 "enter",
                 Type.getMethodDescriptor(
                         Type.getType(void.class),
@@ -116,7 +116,7 @@ public class RefinedClass {
         enter.add(new LdcInsnNode(signature));
         enter.add(new MethodInsnNode(
                 Opcodes.INVOKESTATIC,
-                Type.getInternalName(Agent.class),
+                Type.getInternalName(Bridge.class),
                 "leave",
                 Type.getMethodDescriptor(
                         Type.getType(void.class),
@@ -185,7 +185,7 @@ public class RefinedClass {
         return Arrays.stream(instructions.toArray())
                 .filter((instruction) -> instruction instanceof MethodInsnNode)
                 .map(MethodInsnNode.class::cast)
-                .filter((node) -> !node.owner.equals(Type.getInternalName(Agent.class)))
+                .filter((node) -> !node.owner.equals(Type.getInternalName(Bridge.class)))
                 .collect(Collectors.groupingBy(
                         (node) -> String.format("%s#%s;%s", node.owner, node.name, node.desc),
                         Collectors.reducing((left, right) -> left)

@@ -2,16 +2,17 @@ package com.sf.doctor;
 
 import org.junit.Test;
 
+import java.lang.reflect.Modifier;
+
 public class TestDynamic {
 
-    public static class TestClass {
-        public void run(String a, int b) {
-        }
+    public static interface TestClass {
+        public <T> void run(String a, int b,T c);
     }
 
     @Test
     public void test() {
-        MethodLookup.findMethodHandle(TestClass.class, "run")
-                .forEach((handle) -> new Dynamic().call(handle, new TestClass(), "ok", 1));
+        MethodLookup.findMethod(TestClass.class, "run")
+               .forEach((method)->System.out.println( method.isBridge()));
     }
 }

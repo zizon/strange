@@ -1,220 +1,96 @@
 package com.sf.doctor;
 
-import org.objectweb.asm.Type;
-import org.objectweb.asm.tree.MethodInsnNode;
-
-import java.io.*;
-import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
-import java.lang.instrument.UnmodifiableClassException;
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.net.InetSocketAddress;
-import java.nio.channels.Channels;
-import java.nio.channels.SocketChannel;
-import java.security.ProtectionDomain;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 
-public class Agent implements ClassFileTransformer, AutoCloseable {
+public class Agent implements Supplier<Class<?>>, Runnable {
 
-    protected static MethodHandle ENTER_HANDLE;
-    protected static MethodHandle LEAVE_HANDLE;
-    protected static MethodHandle PRINT_HANDLE;
+    protected final Runnable cleanup;
+    protected final ProfileTransformer transformer;
+    protected final String clazz_name;
+    protected final String method_name;
 
-    protected boolean closed;
-    protected PrintWriter writer;
-    protected final Instrumentation instrumentation;
-    protected final ClassLoader loader;
-    protected final ConcurrentMap<Class<?>, NavigableSet<Method>> touched_methods;
-
-    public static void enter(String signature) {
-        guardConsume(ENTER_HANDLE, signature);
-    }
-
-    public static void leave(String signature) {
-        guardConsume(LEAVE_HANDLE, signature);
-    }
-
-    public static void print(PrintWriter writer) {
-        guardConsume(PRINT_HANDLE, writer);
-    }
-
-    protected static <T> void guardConsume(MethodHandle handle, T input) {
-        Optional.ofNullable(handle)
-                .ifPresent((non_null) -> {
-                    ClassLoader loader = Thread.currentThread().getContextClassLoader();
-                    Thread.currentThread().setContextClassLoader(non_null.getClass().getClassLoader());
-                    try {
-                        non_null.invoke(input);
-                    } catch (Throwable throwable) {
-                        throwable.printStackTrace();
-                    } finally {
-                        Thread.currentThread().setContextClassLoader(loader);
-                    }
-                });
-        return;
-    }
-
-    public Agent(ClassLoader loader,
-                 Instrumentation instrumentation,
-                 Map<String, String> arguments) {
-        this.writer = null;
-        this.loader = loader;
-        this.instrumentation = instrumentation;
-        this.touched_methods = new ConcurrentHashMap<>();
-
+    public Agent(Instrumentation instrumentation,
+                 Map<String, String> arguments,
+                 Runnable cleanup) {
+        // setup transformer
         int port = Integer.parseInt(arguments.get("port"));
         String host = arguments.get("host");
-        try {
-            SocketChannel channel = SocketChannel.open();
-            channel.configureBlocking(true);
-            channel.connect(new InetSocketAddress(host, port));
-            channel.shutdownInput();
-            this.writer = new PrintWriter(Channels.newWriter(channel, "utf8"), true);
-        } catch (IOException e) {
-            throw new UncheckedIOException(String.format("fail to conenct to %s:%s", host, port), e);
-        }
-    }
+        this.transformer = new ProfileTransformer(instrumentation, new AgentChannel(host, port));
 
-    public void println(String message) {
-        Optional.ofNullable(writer)
-                .ifPresent((writer) -> writer.println(message));
-    }
+        this.transformer.printer().println(String.format("connect to %s:%s", host, port));
 
-    public void run(Map<String, String> arguments) {
-        this.println(String.format("connected"));
-        arguments.forEach((key, value) -> this.println(String.format("key:%s value:%s", key, value)));
-        this.println(String.format("instrumentation:%s", instrumentation));
+        // print config
+        arguments.forEach((key, value) -> this.transformer.printer().println(String.format("key:%s value:%s", key, value)));
 
-        this.println(String.format("attach transformer:%s", this));
-        instrumentation.addTransformer(this, true);
+        // setup cleanup
+        this.cleanup = cleanup;
 
+        // find profile entry
         String[] target = arguments.get("entry").split("#");
         if (target.length != 2) {
             throw new IllegalArgumentException("target should be in form of class#$method");
         }
 
-        String class_name = target[0];
-        String method_name = target[1];
-
-        // refine
-        findClassByName(class_name)
-                .forEach((clazz) -> MethodLookup.findMethod(clazz, method_name)
-                        .forEach(this::transformMethod)
-                );
+        // attach
+        this.clazz_name = target[0];
+        this.method_name = target[1];
     }
 
-    protected void transformMethod(Method method) {
-        findClassByName(method.getDeclaringClass().getName())
-                .peek((clazz) -> touched_methods.computeIfAbsent(
-                        clazz,
-                        (ignore) -> new ConcurrentSkipListSet<>(Comparator.comparing(Method::toString))
-                ).add(method))
-                .forEach((clazz) -> {
-                    try {
-                        instrumentation.retransformClasses(clazz);
-                    } catch (UnmodifiableClassException e) {
-                        throw new RuntimeException("fail to transforme method:" + method, e);
-                    }
-                });
-    }
+    protected void internalRun() {
+        while (!transformer.isClosed()) {
+            StackTracing.print(this.transformer.printer());
 
-    protected Stream<Class> findClassByName(String name) {
-        return Arrays.stream(instrumentation.getAllLoadedClasses())
-                .filter((clazz) -> clazz.getName().equals(name));
+            // sleep 5s
+            if (transformer.health(TimeUnit.SECONDS.toMillis(5))) {
+                LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(5));
+                continue;
+            }
+
+            // die
+            transformer.detach();
+        }
     }
 
     @Override
-    public void close() throws Exception {
-        this.closed = true;
-
-        Agent.ENTER_HANDLE = null;
-        Agent.LEAVE_HANDLE = null;
-        Agent.PRINT_HANDLE = null;
-
-        // reset
-        instrumentation.retransformClasses(
-                touched_methods.keySet()
-                        .toArray(new Class[0])
-        );
-
-        // remove this
-        instrumentation.removeTransformer(this);
-    }
-
-    @Override
-    public byte[] transform(ClassLoader loader,
-                            String clazz,
-                            Class<?> classBeingRedefined,
-                            ProtectionDomain protectionDomain,
-                            byte[] classfileBuffer) {
-        if (classBeingRedefined == null) {
-            return null;
-        }
-
-        RefinedClass refined = new RefinedClass(new ByteArrayInputStream(classfileBuffer));
-        if (!closed) {
-            Optional.ofNullable(touched_methods.get(classBeingRedefined))
-                    .orElseGet(Collections::emptyNavigableSet).stream()
-                    .peek((method) -> println(String.format(
-                            "refine class:%s of method:%s",
-                            method.getDeclaringClass(),
-                            method)
-                    ))
-                    .flatMap(refined::profileMethod)
-                    .flatMap((node) -> Arrays.stream(instrumentation.getAllLoadedClasses())
-                            .filter((holder) -> Type.getInternalName(holder).equals(node.owner))
-                            .flatMap((holder) -> MethodLookup.findMethod(holder, node.name))
-                            .filter((method) -> Type.getMethodDescriptor(method).equals(node.desc))
-                    )
-                    .forEach(this::transformMethod);
-        } else {
-            println(String.format("revert class:%s", classBeingRedefined));
-            refined.revert();
-        }
-
-        //refined.print(this.writer);
-        return refined.bytecode();
-    }
-
-    protected static void setupAgentStub() {
+    public void run() {
         try {
-            Class<?> stack_tracing_class = Thread.currentThread()
-                    .getContextClassLoader()
-                    .loadClass(StackTracing.class.getName());
+            // refine
+            this.transformer.attach(this.clazz_name, this.method_name);
 
-            Stream.of(
-                    new AbstractMap.SimpleImmutableEntry<String, Class<?>>("enter", String.class),
-                    new AbstractMap.SimpleImmutableEntry<String, Class<?>>("leave", String.class),
-                    new AbstractMap.SimpleImmutableEntry<String, Class<?>>("print", PrintWriter.class)
-            ).forEach((entry) -> {
-                try {
-                    Method method = stack_tracing_class.getDeclaredMethod(entry.getKey(), entry.getValue());
-                    MethodHandle handle = MethodHandles.lookup().unreflect(method);
-
-                    Field handle_field = Agent.class.getDeclaredField(String.format(
-                            "%s_HANDLE",
-                            entry.getKey().toUpperCase())
-                    );
-                    handle_field.setAccessible(true);
-                    handle_field.set(null, handle);
-                } catch (NoSuchMethodException | IllegalAccessException | NoSuchFieldException e) {
-                    throw new RuntimeException("fail to get method:" + entry, e);
-                }
-            });
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException("fail to setup agent stub", e);
+            this.internalRun();
+        } catch (Throwable throwable) {
+            throwable.printStackTrace(System.out);
+        } finally {
+            Stream.<Optional<Runnable>>of(
+                    Optional.ofNullable(this.cleanup),
+                    Optional.of(this.transformer::detach),
+                    Optional.of(() -> System.out.println("agent unload"))
+            ).filter(Optional::isPresent)
+                    .map(Optional::get)
+                    .forEach((runnable) -> {
+                        try {
+                            runnable.run();
+                        } catch (Throwable throwable) {
+                            throwable.printStackTrace(System.out);
+                        }
+                    });
         }
     }
 
+    @Override
+    public Class<?> get() {
+        return StackTracing.class;
+    }
+
+    @SuppressWarnings("unchecked")
     public static void agentmain(String agent_args, Instrumentation instrumentation) {
         System.out.println("agent loaded");
         Map<String, String> arguments = Arrays.stream(agent_args.split(";"))
@@ -223,25 +99,34 @@ public class Agent implements ClassFileTransformer, AutoCloseable {
                         (tuple) -> tuple.split("=")[1]
                 ));
 
-        try (AgentClassLoader classloader = new AgentClassLoader(arguments.get("jar"))) {
-            setupAgentStub();
+        try {
+            AgentClassLoader classloader = new AgentClassLoader(arguments.get("jar"));
+            // create agent in seperate classloader
+            Object new_agent = classloader.loadClass(Agent.class.getName())
+                    .getConstructor(Instrumentation.class, Map.class, Runnable.class)
+                    .newInstance(instrumentation,
+                            arguments,
+                            (Runnable) () ->
+                                    Stream.<Runnable>of(
+                                            Bridge::unstub,
+                                            classloader::close
+                                    ).forEach((runnable) -> {
+                                        try {
+                                            runnable.run();
+                                        } catch (Throwable throwable) {
+                                            throwable.printStackTrace(System.out);
+                                        }
+                                    })
+                    );
 
-            // use new class?
-            try (AutoCloseable new_agent = (AutoCloseable) classloader.loadClass(Agent.class.getName())
-                    .getConstructor(ClassLoader.class, Instrumentation.class, Map.class)
-                    .newInstance(classloader, instrumentation, arguments)) {
+            // make handler of agent in host classloader use
+            // stacktracing methods from agent classloader
+            Bridge.stub(((Supplier<Class<?>>) new_agent).get());
 
-                MethodLookup.findMethodHandle(new_agent.getClass(), "run")
-                        .findFirst()
-                        .ifPresent((handle) ->
-                                new Dynamic().call(handle, new_agent, arguments)
-                        );
-            }
+            // kick start
+            new Thread((Runnable) new_agent, "strange-agent").start();
         } catch (Throwable e) {
-            new RuntimeException("unexpected exception", e).printStackTrace();
-        } finally {
-            System.out.println("agent unload");
-            System.out.flush();
+            new RuntimeException("unexpected exception", e).printStackTrace(System.out);
         }
     }
 }

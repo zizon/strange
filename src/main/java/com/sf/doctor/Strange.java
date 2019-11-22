@@ -14,7 +14,6 @@ import java.util.stream.Collectors;
 
 public class Strange {
 
-
     protected String host;
     protected int port;
     protected ServerSocketChannel channel;
