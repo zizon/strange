@@ -4,8 +4,12 @@ import org.junit.Test;
 import org.objectweb.asm.Type;
 
 import java.io.PrintWriter;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
 import java.util.Stack;
+import java.util.concurrent.locks.LockSupport;
 
 public class TestStackTracing {
 
@@ -32,7 +36,25 @@ public class TestStackTracing {
         } catch (NoSuchMethodException e) {
             e.printStackTrace();
         }
+    }
 
+    public void test2(){
+        try {
+            for(Method method: java.lang.invoke.LambdaMetafactory.class.getMethods()){
+                System.out.println(method);
+            }
+
+
+            java.lang.invoke.LambdaMetafactory.class.getMethod("metafactory",MethodHandles.Lookup.class,
+                    String.class,
+                    MethodType.class,
+                    MethodType.class,
+                    MethodHandle.class,
+                    MethodType.class);
+        } catch (NoSuchMethodException e) {
+            e.printStackTrace();
+        }
+        LockSupport.park();
     }
 
 }

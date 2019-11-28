@@ -68,6 +68,7 @@ public class Strange {
             parameters.put("port", Integer.toString(port));
             parameters.put("jar", agent);
             parameters.put("entry","org.spark_project.jetty.util.thread.QueuedThreadPool$2#run");
+            //parameters.put("entry","java.util.concurrent.atomic.AtomicInteger#decrementAndGet");
 
             String arguments = parameters.entrySet().stream()
                     .map((entry) -> String.format("%s=%s", entry.getKey(), entry.getValue()))

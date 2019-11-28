@@ -3,7 +3,9 @@ package com.sf.doctor;
 import org.objectweb.asm.Type;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.UncheckedIOException;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.IllegalClassFormatException;
 import java.lang.instrument.Instrumentation;
@@ -32,24 +34,32 @@ public class ProfileTransformer implements ClassFileTransformer {
     public void attach(String class_name, String method_name) {
         this.instrumentation.addTransformer(this, true);
 
-        System.out.println(String.format("classloader:%s", Thread.currentThread().getContextClassLoader()));
-        for (Class clazz : (Iterable<Class>) ()-> findClassByName(class_name).iterator()) {
-            MethodLookup.findMethod(clazz, method_name)
-                    .forEach(this::transformMethod);
-        }
-        /*
         findClassByName(class_name)
-                .forEach((clazz) -> {
-                            MethodLookup.findMethod(clazz, method_name)
-                                    .forEach(this::transformMethod);
-                        }
+                .forEach((clazz) -> MethodLookup.findMethod(clazz, method_name)
+                        .forEach(this::transformMethod)
                 );
-         */
+
     }
 
     public void detach() {
-        this.instrumentation.removeTransformer(this);
-        this.channel.close();
+        try {
+            this.channel.close();
+        } catch (IOException e) {
+            throw new UncheckedIOException("fail to close channel", e);
+        } finally {
+            try {
+                this.touched_methods.keySet().forEach((clazz) -> {
+                    try {
+                        this.instrumentation.retransformClasses(clazz);
+                    } catch (UnmodifiableClassException e) {
+                        e.printStackTrace(System.out);
+                    }
+                });
+            } finally {
+                System.out.println("remove instrumentation");
+                this.instrumentation.removeTransformer(this);
+            }
+        }
     }
 
     public PrintWriter printer() {
@@ -78,17 +88,17 @@ public class ProfileTransformer implements ClassFileTransformer {
         if (!this.isClosed()) {
             Optional.ofNullable(touched_methods.get(classBeingRedefined))
                     .orElseGet(Collections::emptyNavigableSet).stream()
-                    .peek((method) -> channel.println(String.format(
-                            "refine class:%s of method:%s",
-                            method.getDeclaringClass(),
-                            method)
-                    ))
                     .flatMap(refined::profileMethod)
                     .flatMap((node) -> Arrays.stream(instrumentation.getAllLoadedClasses())
                             .filter((holder) -> Type.getInternalName(holder).equals(node.owner))
                             .flatMap((holder) -> MethodLookup.findMethod(holder, node.name))
                             .filter((method) -> Type.getMethodDescriptor(method).equals(node.desc))
                     )
+                    .peek((method) -> channel.println(String.format(
+                            "refine class:%s of method:%s",
+                            method.getDeclaringClass(),
+                            method)
+                    ))
                     .forEach(this::transformMethod);
         } else {
             Optional.ofNullable(touched_methods.get(classBeingRedefined))
@@ -106,18 +116,20 @@ public class ProfileTransformer implements ClassFileTransformer {
     protected void transformMethod(Method method) {
         int skip_class = Modifier.NATIVE | Modifier.ABSTRACT;
         if ((method.getModifiers() & skip_class) != 0) {
-            channel.println(String.format("skip method without bytecode:%s", method));
+            printer().println(String.format("skip transform method without bytecode:%s", method));
             return;
         } else if (method.isBridge()) {
-            channel.println(String.format("skip bridge method:%s", method));
+            printer().println(String.format("skip transform bridge method:%s", method));
+            return;
         }
 
         findClassByName(method.getDeclaringClass().getName())
                 // mark touched
                 .peek((clazz) -> this.touched_methods.computeIfAbsent(
                         clazz,
-                        (ignore) -> new ConcurrentSkipListSet<>(Comparator.comparing(Method::toString))
-                ).add(method))
+                        (ignore) -> new ConcurrentSkipListSet<>(Comparator.comparing(Method::toString)))
+                        .add(method)
+                )
                 .forEach((clazz) -> {
                     try {
                         this.instrumentation.retransformClasses(clazz);

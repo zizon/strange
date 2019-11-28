@@ -45,11 +45,7 @@ public class AgentChannel implements AutoCloseable {
     }
 
     @Override
-    public void close() {
-        try {
-            this.socket.close();
-        } catch (IOException e) {
-            throw new UncheckedIOException("fail to close socket", e);
-        }
+    public void close() throws IOException {
+        this.socket.close();
     }
 }

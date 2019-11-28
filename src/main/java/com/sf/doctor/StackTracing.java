@@ -14,7 +14,9 @@ public class StackTracing {
     protected static Set<String> ROOT_SET_METHOD = new ConcurrentSkipListSet<>();
 
     public static void enter(String signature) {
+        System.out.println("enter:" + signature);
         if (!shouldTrace(signature)) {
+            System.out.println("enter: not trace:" + signature);
             return;
         }
 
@@ -27,7 +29,9 @@ public class StackTracing {
     }
 
     public static void leave(String signature) {
+        System.out.println("leave:" + signature);
         if (!shouldTrace(signature)) {
+            System.out.println("leave: not trace:" + signature);
             return;
         }
 

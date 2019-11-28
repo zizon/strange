@@ -54,8 +54,7 @@ public class Agent implements Supplier<Class<?>>, Runnable {
                 continue;
             }
 
-            // die
-            transformer.detach();
+            break;
         }
     }
 
