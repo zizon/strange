@@ -65,5 +65,4 @@ public class MethodLookup {
                         .filter((entry) -> entry.getKey().isDefault())
         ).flatMap(Function.identity());
     }
-
 }

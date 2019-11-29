@@ -65,7 +65,6 @@ public class StackTracing {
             return;
         }
 
-        System.out.println("enter: " + signature);
         // mark timestamp
         long tid = Thread.currentThread().getId();
         Optional.ofNullable(PER_THREAD_METHOD_ENTRY_TIME)
@@ -87,8 +86,6 @@ public class StackTracing {
         if (!shouldTrace(signature)) {
             return;
         }
-
-        System.out.println("leave: " + signature);
 
         long now = System.nanoTime();
         long tid = Thread.currentThread().getId();
@@ -135,6 +132,11 @@ public class StackTracing {
     }
 
     protected static void unsafePrint(PrintWriter writer) {
+        Map<String, double[]> stat = PROFILE_STAT;
+        if (stat == null) {
+            return;
+        }
+
         List<String[]> rows = Stream.concat(
                 Stream.<String[]>of(new String[]{
                         "Average (ns)",
@@ -152,6 +154,7 @@ public class StackTracing {
                                 String.format("%,.0f", entry.getValue()[0]),
                                 String.format("%-40s", entry.getKey()),
                         })
+
         ).collect(Collectors.toList());
 
         int[] column_width = IntStream.range(0, 5)
@@ -181,7 +184,6 @@ public class StackTracing {
                 column_width[4]
         );
 
-        System.out.println(bar_format);
         String bar = String.format(
                 bar_format,
                 Arrays.stream(column_width)

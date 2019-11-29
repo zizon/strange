@@ -14,7 +14,7 @@ public class AgentChannel implements AutoCloseable {
     public AgentChannel(String host, int port) {
         try {
             this.socket = this.connect(new InetSocketAddress(host, port));
-            this.printer = new PrintWriter(this.socket.getOutputStream());
+            this.printer = new PrintWriter(this.socket.getOutputStream(),true);
         } catch (IOException e) {
             throw new UncheckedIOException(String.format("fail to connect:%s %s", host, port), e);
         }

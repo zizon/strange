@@ -121,7 +121,6 @@ public class TestStackTracing {
                 column_width[4]
         );
 
-        System.out.println(bar_format);
         String bar = String.format(
                 bar_format,
                 Arrays.stream(column_width)

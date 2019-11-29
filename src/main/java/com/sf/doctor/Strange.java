@@ -10,6 +10,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class Strange {
@@ -36,7 +37,7 @@ public class Strange {
             channel.close();
 
             // tuning
-            //connection.socket().setSoTimeout(5 * 1000);
+            connection.socket().setSoTimeout((int) TimeUnit.MINUTES.toMillis(1));
             connection.shutdownOutput();
             connection.configureBlocking(true);
 
@@ -49,7 +50,6 @@ public class Strange {
                 buffer.flip();
                 console.write(buffer);
                 buffer.compact();
-                System.out.flush();
             }
         } catch (IOException e) {
             throw new UncheckedIOException("fail io", e);
@@ -59,7 +59,8 @@ public class Strange {
     public Strange attach(String[] args) {
         String pid = args[0];
         String agent = args[1];
-        System.out.println(String.format("attatch to %s with agent:%s", pid, agent));
+        String target = args[2];
+        System.out.println(String.format("attatch to %s with agent:%s target:%s", pid, agent, target));
 
         try {
             System.out.println(String.format("listening at %s:%s", host, port));
@@ -67,8 +68,9 @@ public class Strange {
             parameters.put("host", host);
             parameters.put("port", Integer.toString(port));
             parameters.put("jar", agent);
+            parameters.put("entry", target);
             //parameters.put("entry","org.spark_project.jetty.util.thread.QueuedThreadPool$2#run");
-            parameters.put("entry","org.apache.spark.deploy.history.HistoryServer#getApplicationInfoList");
+            //parameters.put("entry", "org.apache.spark.deploy.history.HistoryServer#getApplicationInfoList");
 
             String arguments = parameters.entrySet().stream()
                     .map((entry) -> String.format("%s=%s", entry.getKey(), entry.getValue()))

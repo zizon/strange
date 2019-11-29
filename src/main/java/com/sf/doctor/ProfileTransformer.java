@@ -35,9 +35,12 @@ public class ProfileTransformer implements ClassFileTransformer {
         this.instrumentation.addTransformer(this, true);
 
         findClassByName(class_name)
-                .forEach((clazz) -> MethodLookup.findMethod(clazz, method_name)
-                        .peek((method) -> StackTracing.addToRootSet(RefinedClass.signature(method)))
-                        .forEach(this::transformMethod)
+                .forEach((clazz) ->
+                        ("*".equals(method_name) ?
+                                Arrays.stream(clazz.getDeclaredMethods())
+                                : MethodLookup.findMethod(clazz, method_name)
+                        ).peek((method) -> StackTracing.addToRootSet(RefinedClass.signature(method)))
+                                .forEach(this::transformMethod)
                 );
     }
 
@@ -108,7 +111,6 @@ public class ProfileTransformer implements ClassFileTransformer {
             refined.revert();
         }
 
-        //refined.print(this.writer);
         return refined.bytecode();
     }
 
@@ -120,6 +122,11 @@ public class ProfileTransformer implements ClassFileTransformer {
         } else if (method.isBridge()) {
             printer().println(String.format("skip transform bridge method: %s", method));
             return;
+        } else if (Stream.of(
+                "java.",
+                "com.sf.doctor"
+        ).anyMatch((system_class_prefix) -> method.getDeclaringClass().getName().startsWith(system_class_prefix))) {
+            printer().println(String.format("skip system method: %s", method));
         }
 
         findClassByName(method.getDeclaringClass().getName())
