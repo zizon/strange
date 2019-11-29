@@ -7,25 +7,28 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 public class Bridge {
 
     protected static MethodHandle ENTER_HANDLE;
     protected static MethodHandle LEAVE_HANDLE;
     protected static MethodHandle PRINT_HANDLE;
+    protected static MethodHandle CLEANUP_HANDLE;
 
     public static void enter(String signature) {
-        guardConsume(ENTER_HANDLE, signature);
+        Bridge.guardConsume(ENTER_HANDLE, signature);
     }
 
     public static void leave(String signature) {
-        guardConsume(LEAVE_HANDLE, signature);
+        Bridge.guardConsume(LEAVE_HANDLE, signature);
     }
 
     public static void print(PrintWriter writer) {
-        guardConsume(PRINT_HANDLE, writer);
+        Bridge.guardConsume(PRINT_HANDLE, writer);
+    }
+
+    public static void cleanup() {
+        Bridge.guardConsume(CLEANUP_HANDLE);
     }
 
     public static void stub(final Class<?> stack_tracing_class) throws ReflectiveOperationException {
@@ -37,6 +40,7 @@ public class Bridge {
                             case "enter":
                             case "leave":
                             case "print":
+                            case "cleanup":
                                 return true;
                             default:
                                 return false;
@@ -49,7 +53,7 @@ public class Bridge {
                             handle_field.setAccessible(true);
                             handle_field.set(null, handle);
                         } catch (IllegalAccessException | NoSuchFieldException e) {
-                            throw new RuntimeException(String.format("fail to get method handler of method:%s", method), e);
+                            throw new RuntimeException(String.format("fail to get method handler of method: %s", method), e);
                         }
                     });
         } catch (Throwable throwable) {
@@ -69,6 +73,19 @@ public class Bridge {
                         throw new RuntimeException(String.format("fail to set field:%s", field), e);
                     }
                 });
+    }
+
+    protected static void guardConsume(MethodHandle handle) {
+        Optional.ofNullable(handle)
+                .ifPresent((delegate) -> {
+                    try {
+                        delegate.invoke();
+                    } catch (Throwable throwable) {
+                        throwable.printStackTrace(System.out);
+                    }
+                });
+
+        return;
     }
 
     protected static <T> void guardConsume(MethodHandle handle, T input) {

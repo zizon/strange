@@ -36,7 +36,7 @@ public class Strange {
             channel.close();
 
             // tuning
-            connection.socket().setSoTimeout(5 * 1000);
+            //connection.socket().setSoTimeout(5 * 1000);
             connection.shutdownOutput();
             connection.configureBlocking(true);
 
@@ -67,8 +67,8 @@ public class Strange {
             parameters.put("host", host);
             parameters.put("port", Integer.toString(port));
             parameters.put("jar", agent);
-            parameters.put("entry","org.spark_project.jetty.util.thread.QueuedThreadPool$2#run");
-            //parameters.put("entry","java.util.concurrent.atomic.AtomicInteger#decrementAndGet");
+            //parameters.put("entry","org.spark_project.jetty.util.thread.QueuedThreadPool$2#run");
+            parameters.put("entry","org.apache.spark.deploy.history.HistoryServer#getApplicationInfoList");
 
             String arguments = parameters.entrySet().stream()
                     .map((entry) -> String.format("%s=%s", entry.getKey(), entry.getValue()))

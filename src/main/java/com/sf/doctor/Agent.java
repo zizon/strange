@@ -107,6 +107,7 @@ public class Agent implements Supplier<Class<?>>, Runnable {
                             arguments,
                             (Runnable) () ->
                                     Stream.<Runnable>of(
+                                            Bridge::cleanup,
                                             Bridge::unstub,
                                             classloader::close
                                     ).forEach((runnable) -> {

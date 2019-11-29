@@ -36,9 +36,9 @@ public class ProfileTransformer implements ClassFileTransformer {
 
         findClassByName(class_name)
                 .forEach((clazz) -> MethodLookup.findMethod(clazz, method_name)
+                        .peek((method) -> StackTracing.addToRootSet(RefinedClass.signature(method)))
                         .forEach(this::transformMethod)
                 );
-
     }
 
     public void detach() {
@@ -95,8 +95,7 @@ public class ProfileTransformer implements ClassFileTransformer {
                             .filter((method) -> Type.getMethodDescriptor(method).equals(node.desc))
                     )
                     .peek((method) -> channel.println(String.format(
-                            "refine class:%s of method:%s",
-                            method.getDeclaringClass(),
+                            "refine method:%s",
                             method)
                     ))
                     .forEach(this::transformMethod);
@@ -104,7 +103,7 @@ public class ProfileTransformer implements ClassFileTransformer {
             Optional.ofNullable(touched_methods.get(classBeingRedefined))
                     .orElseGet(Collections::emptyNavigableSet)
                     .forEach((method) -> channel.println(
-                            String.format("reverting method:%s of class:%s", method, method.getDeclaringClass())
+                            String.format("reverting method:%s", method)
                     ));
             refined.revert();
         }
@@ -116,10 +115,10 @@ public class ProfileTransformer implements ClassFileTransformer {
     protected void transformMethod(Method method) {
         int skip_class = Modifier.NATIVE | Modifier.ABSTRACT;
         if ((method.getModifiers() & skip_class) != 0) {
-            printer().println(String.format("skip transform method without bytecode:%s", method));
+            printer().println(String.format("skip transform method without bytecode: %s", method));
             return;
         } else if (method.isBridge()) {
-            printer().println(String.format("skip transform bridge method:%s", method));
+            printer().println(String.format("skip transform bridge method: %s", method));
             return;
         }
 
@@ -134,7 +133,7 @@ public class ProfileTransformer implements ClassFileTransformer {
                     try {
                         this.instrumentation.retransformClasses(clazz);
                     } catch (UnmodifiableClassException e) {
-                        throw new RuntimeException("fail to transforme method:" + method, e);
+                        throw new RuntimeException("fail to transform method: " + method, e);
                     }
                 });
     }

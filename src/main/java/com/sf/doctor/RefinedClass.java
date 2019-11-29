@@ -26,6 +26,18 @@ public class RefinedClass {
         }
     }
 
+    public static String signature(ClassNode clazz, MethodNode method) {
+        return String.format("%s#%s;%s", clazz.name, method.name, method.desc);
+    }
+
+    public static String signature(Method method) {
+        return String.format("%s#%s;%s",
+                Type.getInternalName(method.getDeclaringClass()),
+                method.getName(),
+                Type.getMethodDescriptor(method)
+        );
+    }
+
     protected ClassNode clazz;
 
     public RefinedClass(InputStream stream) {
@@ -139,7 +151,7 @@ public class RefinedClass {
         instructions.add(end_instruction);
 
         // insert enter
-        String signature = String.format("%s#%s;%s", this.clazz.name, method.name, method.desc);
+        String signature = RefinedClass.signature(this.clazz, method);
         instructions.insert(start_instuction, generateEnterInstruction(signature));
 
         // insert on return/throw point
@@ -158,9 +170,7 @@ public class RefinedClass {
 
                     return false;
                 })
-                .forEach((return_point) -> {
-                    instructions.insertBefore(return_point, generateLeaveInstruction(signature));
-                });
+                .forEach((return_point) -> instructions.insertBefore(return_point, generateLeaveInstruction(signature)));
 
         // add a generated try-catch-all block
         List<TryCatchBlockNode> try_catches = Optional.ofNullable(method.tryCatchBlocks)
