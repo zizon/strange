@@ -35,7 +35,6 @@ public class ProfileTransformer implements ClassFileTransformer {
     }
 
     public ProfileTransformer refreshWhiteList() {
-        ///this.whitelisted_signature = signatures;
         this.whitelisted_signature = new WhiteList().buildSignatures();
 
         return this;
@@ -52,14 +51,14 @@ public class ProfileTransformer implements ClassFileTransformer {
                         )
                                 // add root set method
                                 .peek((method) -> StackTracing.addToRootSet(RefinedClass.signature(method)))
+                                .peek((method) -> printer().println(String.format("attach method: %s", method)))
                                 // mark being transform
-                                .peek((method) -> transformed_methods.computeIfAbsent(
-                                        method.getDeclaringClass(),
-                                        (ignore) -> new ConcurrentHashMap<>()
-                                        ).computeIfAbsent(method, (ignore) -> false)
-                                )
+                                .peek(this::markbeingTransform)
+                                // extract class
                                 .map(Method::getDeclaringClass)
+                                // deduplicate
                                 .distinct()
+                                // trigger transform
                                 .forEach(this::transformClass)
                 )
         ;
@@ -112,53 +111,76 @@ public class ProfileTransformer implements ClassFileTransformer {
         RefinedClass refined = new RefinedClass(new ByteArrayInputStream(classfileBuffer));
         if (!this.isClosed()) {
             Optional.ofNullable(transformed_methods.get(classBeingRedefined))
-                    .orElseGet(ConcurrentHashMap::new).keySet().stream()
-                    // filter that should transform
-                    .filter((method) -> !this.shouldNotTransformed(method))
-                    // add profile code
-                    .peek((method) -> transformed_methods.computeIfAbsent(
-                            method.getDeclaringClass(),
-                            (ignore) -> new ConcurrentHashMap<>()
-                    ).compute(method, (ignore_key, ignore_value) -> true))
-                    .flatMap(refined::profileMethod)
-                    // referenced method
-                    .flatMap((node) -> Arrays.stream(instrumentation.getAllLoadedClasses())
-                            .filter((holder) -> Type.getInternalName(holder).equals(node.owner))
-                            .flatMap((holder) -> MethodLookup.findMethod(holder, node.name))
-                            .filter((method) -> Type.getMethodDescriptor(method).equals(node.desc))
+                    .ifPresent((methods) ->
+                            methods.keySet().stream()
+                                    // filter that should transform
+                                    .filter((method) -> !this.skipTransform(method))
+                                    // add profile code
+                                    .peek(this::markTransformed)
+                                    .peek((method) -> printer().println(String.format("profile method: %s", method)))
+                                    .flatMap(refined::profileMethod)
+                                    // referenced method
+                                    .flatMap((node) -> Arrays.stream(instrumentation.getAllLoadedClasses())
+                                            // find class that match method owner
+                                            .filter((holder) -> Type.getInternalName(holder).equals(node.owner))
+                                            // extract methods of owner with specified name
+                                            .flatMap((holder) -> MethodLookup.findMethod(holder, node.name))
+                                            // and type
+                                            .filter((method) -> Type.getMethodDescriptor(method).equals(node.desc))
+                                    )
+                                    // filter that should transform
+                                    .filter((method) -> !this.skipTransform(method))
+                                    // group method by their class
+                                    // and figure out methods that had not yet been transformed
+                                    .collect(Collectors.groupingBy(
+                                            Method::getDeclaringClass,
+                                            // simply add transform entry.
+                                            // summary touch states of method under this class
+                                            Collectors.reducing(
+                                                    true,
+                                                    this::isTransforemed,
+                                                    Boolean::logicalAnd
+                                            )
+                                    )).entrySet().stream()
+                                    // filter class that had not yet transformed method
+                                    .filter((entry) -> !entry.getValue())
+                                    .map(Map.Entry::getKey)
+                                    .forEach(this::transformClass)
                     )
-                    // filter that should transform
-                    .filter((method) -> !this.shouldNotTransformed(method))
-                    .collect(Collectors.groupingBy(
-                            Method::getDeclaringClass,
-                            // simply add transform entry.
-                            // summary touch states of method under this class
-                            Collectors.reducing(
-                                    true,
-                                    (method) -> transformed_methods.computeIfAbsent(
-                                            method.getDeclaringClass(),
-                                            (ignore) -> new ConcurrentHashMap<>()
-                                    ).computeIfAbsent(method, (ignore) -> false),
-                                    Boolean::logicalAnd
-                            )
-                    )).entrySet().stream()
-                    // filter class that had not yet transformed method
-                    .filter((entry) -> !entry.getValue())
-                    .map(Map.Entry::getKey)
-                    .forEach(this::transformClass)
             ;
         } else {
             Optional.ofNullable(transformed_methods.get(classBeingRedefined))
                     .ifPresent((methods) -> methods.keySet()
-                            .forEach((transforemd_method) ->
-                                    channel.println(
-                                            String.format("reverting method:%s", transforemd_method)
+                            .forEach((transformed_method) ->
+                                    System.out.println(
+                                            String.format("reverting method: %s", transformed_method)
                                     )
                             ));
             refined.revert();
         }
 
         return refined.bytecode();
+    }
+
+    protected void markbeingTransform(Method method) {
+        transformed_methods.computeIfAbsent(
+                method.getDeclaringClass(),
+                (ignore) -> new ConcurrentHashMap<>()
+        ).compute(method, (ignore_key, ignore_value) -> false);
+    }
+
+
+    protected void markTransformed(Method method) {
+        transformed_methods.computeIfAbsent(
+                method.getDeclaringClass(),
+                (ignore) -> new ConcurrentHashMap<>()
+        ).compute(method, (ignore_key, ignore_value) -> true);
+    }
+
+    protected boolean isTransforemed(Method method) {
+        return Optional.ofNullable(transformed_methods.get(method))
+                .flatMap((methods) -> Optional.ofNullable(methods.get(method)))
+                .orElse(false);
     }
 
     protected void transformClass(Class<?> clazz) {
@@ -175,17 +197,17 @@ public class ProfileTransformer implements ClassFileTransformer {
                 });
     }
 
-    protected boolean shouldNotTransformed(Method method) {
+    protected boolean skipTransform(Method method) {
         int skip_class = Modifier.NATIVE | Modifier.ABSTRACT;
         if ((method.getModifiers() & skip_class) != 0) {
             printer().println(String.format("skip transform method without bytecode: %s", method));
             return true;
         } else if (method.isBridge()) {
             printer().println(String.format("skip transform bridge method: %s", method));
-            return false;
+            return true;
         } else if (whitelisted_signature.contains(RefinedClass.signature(method))) {
             printer().println(String.format("skip whitelisted method: %s", method));
-            return false;
+            return true;
         }
 
         return Optional.ofNullable(transformed_methods.get(method.getDeclaringClass()))
