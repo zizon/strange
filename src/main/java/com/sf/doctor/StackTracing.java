@@ -40,11 +40,12 @@ public class StackTracing {
     }
 
     public static boolean shouldTrace(String signature) {
-        return isTargetInCallStack() || ROOT_SET_METHOD.contains(signature);
+        return isTargetInCallStack() || inRootSet(signature);
     }
 
     public static void addToRootSet(String signature) {
-        ROOT_SET_METHOD.add(signature);
+        Optional.ofNullable(ROOT_SET_METHOD)
+                .ifPresent((rootset) -> rootset.add(signature));
     }
 
     public static boolean isTargetInCallStack() {
@@ -54,9 +55,15 @@ public class StackTracing {
                 .map((tracing) -> tracing.entrySet().stream()
                         .anyMatch(
                                 (entry) -> !entry.getValue().isEmpty()
-                                        && ROOT_SET_METHOD.contains(entry.getKey())
+                                        && inRootSet(entry.getKey())
                         )
                 )
+                .orElse(false);
+    }
+
+    protected static boolean inRootSet(String signature) {
+        return Optional.ofNullable(ROOT_SET_METHOD)
+                .map((rootset) -> rootset.contains(signature))
                 .orElse(false);
     }
 

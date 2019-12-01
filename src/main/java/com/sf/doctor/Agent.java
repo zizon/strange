@@ -4,6 +4,7 @@ import java.lang.instrument.Instrumentation;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
@@ -23,7 +24,8 @@ public class Agent implements Supplier<Class<?>>, Runnable {
         // setup transformer
         int port = Integer.parseInt(arguments.get("port"));
         String host = arguments.get("host");
-        this.transformer = new ProfileTransformer(instrumentation, new AgentChannel(host, port));
+        this.transformer = new ProfileTransformer(instrumentation, new AgentChannel(host, port))
+                .refreshWhiteList();
 
         this.transformer.printer().println(String.format("connect to %s:%s", host, port));
 
@@ -46,6 +48,8 @@ public class Agent implements Supplier<Class<?>>, Runnable {
 
     protected void internalRun() {
         while (!transformer.isClosed()) {
+            this.transformer.refreshWhiteList();
+
             StackTracing.print(this.transformer.printer());
 
             // sleep 5s
@@ -69,8 +73,8 @@ public class Agent implements Supplier<Class<?>>, Runnable {
             throwable.printStackTrace(System.out);
         } finally {
             Stream.<Optional<Runnable>>of(
-                    Optional.ofNullable(this.cleanup),
                     Optional.of(this.transformer::detach),
+                    Optional.ofNullable(this.cleanup),
                     Optional.of(() -> System.out.println("agent unload"))
             ).filter(Optional::isPresent)
                     .map(Optional::get)
@@ -98,26 +102,26 @@ public class Agent implements Supplier<Class<?>>, Runnable {
                         (tuple) -> tuple.split("=")[1]
                 ));
 
+        Runnable cleanup = null;
         try {
             AgentClassLoader classloader = new AgentClassLoader(arguments.get("jar"));
+
+            cleanup = (Runnable) () ->
+                    Stream.<Runnable>of(
+                            Bridge::cleanup,
+                            Bridge::unstub,
+                            classloader::close
+                    ).forEach((runnable) -> {
+                        try {
+                            runnable.run();
+                        } catch (Throwable throwable) {
+                            throwable.printStackTrace(System.out);
+                        }
+                    });
             // create agent in seperate classloader
             Object new_agent = classloader.loadClass(Agent.class.getName())
                     .getConstructor(Instrumentation.class, Map.class, Runnable.class)
-                    .newInstance(instrumentation,
-                            arguments,
-                            (Runnable) () ->
-                                    Stream.<Runnable>of(
-                                            Bridge::cleanup,
-                                            Bridge::unstub,
-                                            classloader::close
-                                    ).forEach((runnable) -> {
-                                        try {
-                                            runnable.run();
-                                        } catch (Throwable throwable) {
-                                            throwable.printStackTrace(System.out);
-                                        }
-                                    })
-                    );
+                    .newInstance(instrumentation, arguments, cleanup);
 
             // make handler of agent in host classloader use
             // stacktracing methods from agent classloader
@@ -127,6 +131,7 @@ public class Agent implements Supplier<Class<?>>, Runnable {
             new Thread((Runnable) new_agent, "strange-agent").start();
         } catch (Throwable e) {
             new RuntimeException("unexpected exception", e).printStackTrace(System.out);
+            Optional.ofNullable(cleanup).ifPresent(Runnable::run);
         }
     }
 }

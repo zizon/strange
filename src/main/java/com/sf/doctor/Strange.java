@@ -37,7 +37,7 @@ public class Strange {
             channel.close();
 
             // tuning
-            connection.socket().setSoTimeout((int) TimeUnit.MINUTES.toMillis(1));
+            connection.socket().setSoTimeout((int) TimeUnit.SECONDS.toMillis(10));
             connection.shutdownOutput();
             connection.configureBlocking(true);
 

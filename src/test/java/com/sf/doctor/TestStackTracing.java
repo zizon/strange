@@ -134,38 +134,6 @@ public class TestStackTracing {
                         .flatMap((row) -> Stream.of(bar, row)),
                 Stream.of(bar)
         ).forEach(writer::println);
-
-/*
-        Stream.concat(
-                Stream.of(String.format(
-                        "| %12s | %11s | %12s | %12s | %40s |",
-                        "Average",
-                        "Maximum",
-                        "Minimum",
-                        "Invocation",
-                        "Method"
-                )),
-                PROFILE_STAT.entrySet().stream()
-                        .sorted(Comparator.comparingDouble((entry) -> -entry.getValue()[1]))
-                        .map((entry) -> String.format("| %,12.2f | %,12.2f| %,12.2f | %12.0f | %-40s |",
-                                entry.getValue()[1],
-                                entry.getValue()[2],
-                                entry.getValue()[3],
-                                entry.getValue()[0],
-                                entry.getKey()
-                                )
-                        )
-        ).peek(writer::println)
-                .map(String::length)
-                .max(Integer::compareTo)
-                .ifPresent((width) -> writer.println(
-                        IntStream.range(0, width)
-                                .mapToObj((ignore) -> " ")
-                                .collect(Collectors.joining())
-                ))
-        ;
-        */
-
     }
 
 }

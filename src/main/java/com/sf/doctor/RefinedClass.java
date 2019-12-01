@@ -27,11 +27,15 @@ public class RefinedClass {
     }
 
     public static String signature(ClassNode clazz, MethodNode method) {
-        return String.format("%s#%s;%s", clazz.name, method.name, method.desc);
+        return String.format("%s -> %s; %s", clazz.name, method.name, method.desc);
+    }
+
+    public static String signature(ClassNode clazz, MethodInsnNode method) {
+        return String.format("%s -> %s; %s", clazz.name, method.name, method.desc);
     }
 
     public static String signature(Method method) {
-        return String.format("%s#%s;%s",
+        return String.format("%s -> %s; %s",
                 Type.getInternalName(method.getDeclaringClass()),
                 method.getName(),
                 Type.getMethodDescriptor(method)
@@ -208,8 +212,8 @@ public class RefinedClass {
     }
 
     protected ClassNode newClassNode(InputStream bytecode) {
-        try {
-            ClassReader reader = new ClassReader(bytecode);
+        try (InputStream stream = bytecode) {
+            ClassReader reader = new ClassReader(stream);
             ClassNode clazz = new ClassNode(Opcodes.ASM7);
             reader.accept(clazz, 0);
             return clazz;

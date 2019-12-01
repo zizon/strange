@@ -22,8 +22,8 @@ public class MethodLookup {
                 });
     }
 
-    public static Stream<Method> findMethod(Class<?> clazz, String name) {
-        return findMethodWihtLevel(clazz, name, 0)
+    public static Stream<Method> findMethods(Class<?> clazz) {
+        return findMethodsWihtLevel(clazz, 0)
                 .collect(Collectors.groupingBy(
                         // key by method signature
                         (entry) -> methodType(entry.getKey()),
@@ -36,6 +36,12 @@ public class MethodLookup {
                 .map(Optional::get)
                 .map(Map.Entry::getKey)
                 ;
+
+    }
+
+    public static Stream<Method> findMethod(Class<?> clazz, String name) {
+        return findMethods(clazz)
+                .filter((method) -> method.getName().equals(name));
     }
 
     protected static String methodType(Method method) {
@@ -45,23 +51,20 @@ public class MethodLookup {
         ).toString();
     }
 
-    protected static Stream<Map.Entry<Method, Integer>> findMethodWihtLevel(Class<?> clazz, String name, int level) {
+    protected static Stream<Map.Entry<Method, Integer>> findMethodsWihtLevel(Class<?> clazz, int level) {
         return Stream.of(
                 // declared method
                 Arrays.stream(clazz.getDeclaredMethods())
-                        .filter((method) -> method.getName().equals(name))
                         .map((method) -> new AbstractMap.SimpleImmutableEntry<>(method, level)),
 
                 // parent method
                 Optional.ofNullable(clazz.getSuperclass())
-                        .filter((method) -> method.getName().equals(name))
-                        .map((parent) -> findMethodWihtLevel(parent, name, level + 1))
+                        .map((parent) -> findMethodsWihtLevel(parent, level + 1))
                         .orElseGet(Stream::empty),
 
                 // default interface method
                 Arrays.stream(clazz.getInterfaces())
-                        .flatMap((implemented) -> findMethodWihtLevel(implemented, name, level + 1))
-                        .filter((method) -> method.getKey().getName().equals(name))
+                        .flatMap((implemented) -> findMethodsWihtLevel(implemented, level + 1))
                         .filter((entry) -> entry.getKey().isDefault())
         ).flatMap(Function.identity());
     }
