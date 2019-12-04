@@ -1,17 +1,24 @@
 package com.sf.doctor;
 
+import com.sun.tools.attach.AttachNotSupportedException;
 import com.sun.tools.attach.VirtualMachine;
+import com.sun.tools.attach.VirtualMachineDescriptor;
+import sun.jvmstat.monitor.*;
 import sun.tools.attach.HotSpotVirtualMachine;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.InetAddress;
+import java.io.*;
+import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.*;
+import java.util.stream.Collector;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 public class Strange {
 
@@ -56,10 +63,7 @@ public class Strange {
         }
     }
 
-    public Strange attach(String[] args) {
-        String pid = args[0];
-        String agent = args[1];
-        String target = args[2];
+    public Strange attach(String pid, String agent, String target) {
         System.out.println(String.format("attatch to %s with agent:%s target:%s", pid, agent, target));
 
         try {
@@ -77,15 +81,237 @@ public class Strange {
                     .collect(Collectors.joining(";"));
             HotSpotVirtualMachine hotspot = (HotSpotVirtualMachine) VirtualMachine.attach(pid);
             hotspot.loadAgent(agent, arguments);
-            System.out.println("attached");
 
+            System.exit(0);
             return this;
         } catch (Throwable throwable) {
             throw new RuntimeException("fail to attach vm", throwable);
         }
     }
 
-    public static void main(String[] args) {
-        new Strange().attach(args).processIO();
+    public Optional<String> listVM(VirtualMachineDescriptor vm) {
+        HotSpotVirtualMachine hotspot = null;
+        try {
+            hotspot = (HotSpotVirtualMachine) VirtualMachine.attach(vm.id());
+
+            return Optional.of(
+                    Stream.of(
+                            Optional.of(String.format(
+                                    "Digested Info of VM:%s PID:%s",
+                                    vm.displayName(),
+                                    vm.id()
+                            )),
+
+                            executeCommand(hotspot, "GC.class_histogram",
+                                    (lines) -> String.format(
+                                            "Top %d Heap Object%n"
+                                                    + "%s",
+                                            30,
+                                            lines.limit(30 + 3)
+                                                    .collect(Collectors.joining(System.lineSeparator()))
+                                    )
+                            ),
+
+                            inspectStack(hotspot),
+
+                            Optional.of(String.format(
+                                    "%s%n",
+                                    IntStream.range(0, 40)
+                                            .mapToObj((ignore) -> "=")
+                                            .collect(Collectors.joining())
+                            ))
+                    ).filter(Optional::isPresent)
+                            .map(Optional::get)
+                            .collect(Collectors.joining(System.lineSeparator()))
+            );
+        } catch (AttachNotSupportedException | IOException e) {
+            return Optional.empty();
+        } finally {
+            Optional.ofNullable(hotspot).ifPresent((hotspot_vm) -> {
+                try {
+                    hotspot_vm.detach();
+                } catch (IOException e) {
+                    // silence
+                }
+            });
+        }
+    }
+
+    protected Optional<String[]> parseFrame(String frame) {
+        String[] rows = frame.split(System.lineSeparator());
+        // group: "ForkJoinPool.commonPool-worker-25" #21 daemon prio=5 os_prio=0 tid=0x00007fbe48222800 nid=0x77fc6 runnable [0x00007fbdf4bcf000]
+        if (!rows[0].contains("os_prio=") || rows.length <= 1) {
+            return Optional.empty();
+        }
+
+        return Optional.of(new String[]{
+                // thread name
+                rows[0].split("os_prio")[0].split("#")[0],
+
+                // state
+                rows[1].split(":")[1],
+
+                // stack frame
+                Arrays.stream(rows)
+                        .skip(2)
+                        // strip \t
+                        .map((row) -> {
+                            if (row.startsWith("\tat")) {
+                                // normal frame
+                                return row;
+                            }
+
+                            // lock states
+                            return row.replaceAll("<.[^<>]*>", "<>");
+                        }).collect(Collectors.joining(System.lineSeparator()))
+        });
+    }
+
+    protected Optional<String> inspectStack(HotSpotVirtualMachine hotspot) {
+        try {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(hotspot.executeJCmd("Thread.print")))) {
+                return Optional.of(String.format(
+                        "Grouped Stack%n"
+                                + "%s",
+                        Arrays.stream(
+                                reader.lines()
+                                        // skip header
+                                        .skip(3)
+                                        .collect(Collectors.joining(System.lineSeparator()))
+                                        .split(String.format("%n%n"))
+                        ).map(this::parseFrame)
+                                .filter(Optional::isPresent)
+                                .map(Optional::get)
+                                .filter((array) -> !array[2].isEmpty())
+                                .collect(Collectors.groupingBy(
+                                        // group by stack frame
+                                        (array) -> array[2],
+                                        // then by thread state
+                                        Collectors.groupingBy((array) -> array[1], Collectors.summingInt((ignore) -> 1))
+                                ))
+                                .entrySet().stream()
+                                .flatMap((entry) -> entry.getValue().entrySet().stream()
+                                        .map((by_state) -> new AbstractMap.SimpleImmutableEntry<>(
+                                                by_state.getValue(),
+                                                String.format(
+                                                        "java.lang.Thread.State:%s (%d)%n%s",
+                                                        by_state.getKey(),
+                                                        by_state.getValue(),
+                                                        entry.getKey()
+                                                ))
+                                        )
+                                )
+                                .sorted(Map.Entry.<Integer, String>comparingByKey().reversed())
+                                .map(Map.Entry::getValue)
+                                .collect(Collectors.joining(String.format("%n%n")))
+                ));
+            }
+        } catch (IOException e) {
+            return Optional.empty();
+        }
+    }
+
+    protected Optional<String> executeCommand(HotSpotVirtualMachine hotspot, String command, Function<Stream<String>, String> line_consumer) {
+        try {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(hotspot.executeJCmd(command)))) {
+                return Optional.ofNullable(line_consumer)
+                        .map((consumer) -> consumer.apply(reader.lines()));
+            }
+        } catch (IOException e) {
+            return Optional.empty();
+        }
+    }
+
+    public static void main(String[] args) throws URISyntaxException {
+        switch (args.length) {
+            case 0:
+                VirtualMachine.list().parallelStream()
+                        .map((descriptor) -> {
+                            try {
+                                VirtualMachine.attach(descriptor).detach();
+                                return Optional.of(descriptor);
+                            } catch (AttachNotSupportedException | IOException e) {
+                                return Optional.<VirtualMachineDescriptor>empty();
+                            }
+                        })
+                        .filter(Optional::isPresent)
+                        .map(Optional::get)
+                        .map((descriptor) -> String.format(
+                                "available VM: %s PID: %s",
+                                descriptor.displayName(),
+                                descriptor.id()
+                        ))
+                        .forEach(System.out::println);
+                break;
+            default:
+            case 1:
+                switch (args[0]) {
+                    case "-h":
+                    case "-help":
+                    case "help":
+                        System.out.println(String.format(
+                                "Usage java -jar $jar [ [pid] method]%n"
+                                        + "\texample:%n"
+                                        + "\t\tlist all accessible vm information%n"
+                                        + "\t\t\tjava -jar $jar%n"
+                                        + "\t\tlist specified vm information%n"
+                                        + "\t\t\tjava -jar $jar $pid%n"
+                                        + "\t\tprofile methods of specified class%n"
+                                        + "\t\t\tjava -jar $jar $pid org.apache.spark.deploy.history.HistoryServer#*%n"
+                                        + "\t\tprofile method of specified class%n"
+                                        + "\t\t\tjava -jar $jar $pid org.apache.spark.deploy.history.HistoryServer#getApplicationInfo%n"
+                                        + "\t\tprint counters%n"
+                                        + "\t\t\tjava -jar $jar $pid stat%n"
+                        ));
+                        break;
+                    default:
+                        VirtualMachine.list().parallelStream()
+                                .filter((vm) -> vm.id().equals(args[0]))
+                                .map((vm) -> new Strange().listVM(vm))
+                                .filter(Optional::isPresent)
+                                .map(Optional::get)
+                                .forEach(System.out::println)
+                        ;
+                }
+
+                break;
+            case 2:
+                if (!args[1].equals("stat")) {
+                    new Strange().attach(
+                            args[0],
+                            new File(Strange.class.getProtectionDomain().getCodeSource().getLocation().toURI()).getAbsolutePath(),
+                            args[1]
+                    ).processIO();
+                    break;
+                }
+
+                VirtualMachine.list().parallelStream()
+                        .filter((descriptor) -> descriptor.id().equals(args[0]))
+                        .flatMap((descriptor) -> {
+                            try {
+                                VmIdentifier vmid = new VmIdentifier(descriptor.id());
+                                return MonitoredHost
+                                        .getMonitoredHost(vmid)
+                                        .getMonitoredVm(vmid)
+                                        .findByPattern(".*")
+                                        .stream();
+                            } catch (URISyntaxException | MonitorException e) {
+                                throw new RuntimeException(
+                                        String.format(
+                                                "fail to create VmIdentifier for:%s",
+                                                descriptor
+                                        )
+                                );
+                            }
+                        })
+                        .map((monitor) -> String.format(
+                                "Type:%s  %s = %s",
+                                monitor.getUnits(),
+                                monitor.getName(),
+                                monitor.getValue()
+                        ))
+                        .forEach(System.out::println);
+                break;
+        }
     }
 }

@@ -30,8 +30,8 @@ public class RefinedClass {
         return String.format("%s -> %s; %s", clazz.name, method.name, method.desc);
     }
 
-    public static String signature(ClassNode clazz, MethodInsnNode method) {
-        return String.format("%s -> %s; %s", clazz.name, method.name, method.desc);
+    public static String signature(MethodInsnNode method) {
+        return String.format("%s -> %s; %s", method.owner, method.name, method.desc);
     }
 
     public static String signature(Method method) {
@@ -87,7 +87,7 @@ public class RefinedClass {
         return writer.toByteArray();
     }
 
-    public Stream<MethodInsnNode> profileMethod(Method method) {
+    public MethodNode profileMethod(Method method) {
         // annotate class
         this.annotate();
 
@@ -104,7 +104,9 @@ public class RefinedClass {
                         .noneMatch((attr) -> attr.type.equals(METHOD_REFINED_MARK)))
                 // mark
                 .peek((node) -> node.attrs.add(new UserDefinedAttribute(METHOD_REFINED_MARK, new byte[0])))
-                .flatMap(this::refinedMethodNode)
+                .map(this::refinedMethodNode)
+                .findAny()
+                .orElseThrow(() -> new RuntimeException(String.format("fail to profile method: %s", RefinedClass.signature(method))))
                 ;
     }
 
@@ -142,7 +144,7 @@ public class RefinedClass {
         return enter;
     }
 
-    protected Stream<MethodInsnNode> refinedMethodNode(MethodNode method) {
+    protected MethodNode refinedMethodNode(MethodNode method) {
         Label start = new Label();
         Label end = new Label();
 
@@ -196,19 +198,7 @@ public class RefinedClass {
         method.instructions = instructions;
 
         // scan methods
-        return Arrays.stream(instructions.toArray())
-                .filter((instruction) -> instruction instanceof MethodInsnNode)
-                .map(MethodInsnNode.class::cast)
-                .filter((node) -> !node.owner.equals(Type.getInternalName(Bridge.class)))
-                .collect(Collectors.groupingBy(
-                        (node) -> String.format("%s#%s;%s", node.owner, node.name, node.desc),
-                        Collectors.reducing((left, right) -> left)
-                ))
-                .values()
-                .stream()
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                ;
+        return method;
     }
 
     protected ClassNode newClassNode(InputStream bytecode) {

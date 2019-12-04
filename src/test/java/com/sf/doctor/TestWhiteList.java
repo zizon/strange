@@ -28,4 +28,11 @@ public class TestWhiteList {
         }
     }
 
+    @Test
+    public void testStrip(){
+        String message = " wait for  <0x000000008020b7f0> (a java.util.concurrent.ForkJoinPool)";
+        System.out.println(message.replaceAll("<.[^<>]*>","<>"));
+    }
+
+
 }

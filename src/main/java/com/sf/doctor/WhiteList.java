@@ -97,15 +97,21 @@ public class WhiteList {
                 .orElseGet(Collections::emptyList)
                 .stream()
                 .flatMap((method) ->
-                        Arrays.stream(
-                                Optional.ofNullable(method.instructions)
-                                        .map(InsnList::toArray)
-                                        .orElseGet(() -> new AbstractInsnNode[0])
+                        Stream.concat(
+                                // include decleared method
+                                Stream.of(RefinedClass.signature(class_node, method)),
+
+                                // and methods in bytecode
+                                Arrays.stream(
+                                        Optional.ofNullable(method.instructions)
+                                                .map(InsnList::toArray)
+                                                .orElseGet(() -> new AbstractInsnNode[0])
+                                )
+                                        // filter and cast to method node
+                                        .filter((method_node) -> method_node instanceof MethodInsnNode)
+                                        .map(MethodInsnNode.class::cast)
+                                        .map(RefinedClass::signature)
                         )
-                                // filter and cast to method node
-                                .filter((method_node) -> method_node instanceof MethodInsnNode)
-                                .map(MethodInsnNode.class::cast)
-                                .map((node) -> RefinedClass.signature(class_node, node))
                 )
                 ;
     }

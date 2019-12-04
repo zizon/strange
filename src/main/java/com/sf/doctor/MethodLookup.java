@@ -1,7 +1,8 @@
 package com.sf.doctor;
 
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
+
+import org.objectweb.asm.Type;
+
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
 import java.util.*;
@@ -10,17 +11,6 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class MethodLookup {
-
-    public static Stream<MethodHandle> findMethodHandle(Class<?> clazz, String name) {
-        return findMethod(clazz, name)
-                .map((method) -> {
-                    try {
-                        return MethodHandles.lookup().unreflect(method);
-                    } catch (IllegalAccessException e) {
-                        throw new RuntimeException("fail to get handle", e);
-                    }
-                });
-    }
 
     public static Stream<Method> findMethods(Class<?> clazz) {
         return findMethodsWihtLevel(clazz, 0)
@@ -42,6 +32,12 @@ public class MethodLookup {
     public static Stream<Method> findMethod(Class<?> clazz, String name) {
         return findMethods(clazz)
                 .filter((method) -> method.getName().equals(name));
+    }
+
+    public static Stream<Method> findMethod(Class<?> clazz, String name, String descriptor) {
+        return findMethods(clazz)
+                .filter((method) -> method.getName().equals(name))
+                .filter((method) -> Type.getMethodDescriptor(method).equals(descriptor));
     }
 
     protected static String methodType(Method method) {
