@@ -4,7 +4,7 @@ import java.lang.instrument.Instrumentation;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
@@ -25,7 +25,7 @@ public class Agent implements Supplier<Class<?>>, Runnable {
         int port = Integer.parseInt(arguments.get("port"));
         String host = arguments.get("host");
         this.transformer = new ProfileTransformer(instrumentation, new AgentChannel(host, port))
-                .refreshWhiteList();
+                .refresh();
 
         this.transformer.printer().println(String.format("connect to %s:%s", host, port));
 
@@ -48,7 +48,7 @@ public class Agent implements Supplier<Class<?>>, Runnable {
 
     protected void internalRun() {
         while (!transformer.isClosed()) {
-            this.transformer.refreshWhiteList();
+            this.transformer.refresh();
 
             StackTracing.print(this.transformer.printer());
 
@@ -74,8 +74,7 @@ public class Agent implements Supplier<Class<?>>, Runnable {
         } finally {
             Stream.<Optional<Runnable>>of(
                     Optional.of(this.transformer::detach),
-                    Optional.ofNullable(this.cleanup),
-                    Optional.of(() -> System.out.println("agent unload"))
+                    Optional.ofNullable(this.cleanup)
             ).filter(Optional::isPresent)
                     .map(Optional::get)
                     .forEach((runnable) -> {
@@ -106,11 +105,12 @@ public class Agent implements Supplier<Class<?>>, Runnable {
         try {
             AgentClassLoader classloader = new AgentClassLoader(arguments.get("jar"));
 
-            cleanup = (Runnable) () ->
+            cleanup = () ->
                     Stream.<Runnable>of(
                             Bridge::cleanup,
                             Bridge::unstub,
-                            classloader::close
+                            classloader::close,
+                            () -> System.out.println("agent unload")
                     ).forEach((runnable) -> {
                         try {
                             runnable.run();

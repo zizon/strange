@@ -16,10 +16,11 @@ repositories {
 }
 
 shadowJar {
-    classifier = null
+    archiveClassifier = null
     manifest {
         attributes(
                 'Agent-Class': 'com.sf.doctor.Agent',
+                'Main-Class' : 'com.sf.doctor.BootLoaderFriendly',
                 'Can-Retransform-Classes': true,
         )
     }

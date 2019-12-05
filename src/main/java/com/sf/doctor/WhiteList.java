@@ -1,146 +1,103 @@
 package com.sf.doctor;
 
 import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.Opcodes;
-import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.MethodInsnNode;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.lang.reflect.Method;
 import java.util.*;
-import java.util.jar.JarEntry;
-import java.util.jar.JarFile;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 
 public class WhiteList {
 
-    public Set<String> buildSignatures() {
-        return collectSignatureFromClass(WhiteList.class)
-                .collect(Collectors.toSet());
+    protected final Map<String, Set<Class<?>>> classes;
+
+    public WhiteList(Map<String, Set<Class<?>>> classes) {
+        this.classes = classes;
     }
 
-    protected Stream<String> collectSignatureFromClass(Class<?> root_locator) {
-        try {
-            Path source_root = Paths.get(
-                    root_locator.getProtectionDomain()
-                            .getCodeSource()
-                            .getLocation()
-                            .toURI()
-            );
+    public Set<String> build() {
+        Set<String> visited = new ConcurrentSkipListSet<>();
 
-            // for plain class files
-            if (Files.isDirectory(source_root)) {
-                try (Stream<Path> walker = Files.walk(source_root)) {
-                    return walker.filter(Files::isRegularFile)
-                            .map((path) -> {
-                                try {
-                                    return streamToClass(path.toFile().toURI().toURL().openStream());
-                                } catch (IOException e) {
-                                    throw new UncheckedIOException(String.format(
-                                            "fail to open file:%s",
-                                            path
-                                    ), e);
-                                }
-                            })
-                            .flatMap(this::findReferenceMethodSignatures)
-                            ;
-                }
-            } else {
-                // should be a jar file
-                JarFile jar = new JarFile(source_root.toFile());
-                return fromJarFile(jar)
-                        .filter((entry) -> entry.getName().endsWith(".class"))
-                        .map((entry) -> {
-                            try {
-                                return streamToClass(jar.getInputStream(entry));
-                            } catch (IOException e) {
-                                throw new UncheckedIOException(String.format(
-                                        "fail to open entry:%s",
-                                        entry
-                                ), e);
-                            }
-                        })
-                        .flatMap(this::findReferenceMethodSignatures)
-                        ;
-
-            }
-        } catch (URISyntaxException | IOException e) {
-            throw new UncheckedIOException(
-                    String.format("fail to locate root of class:%s", root_locator),
-                    e instanceof IOException ? (IOException) e : new IOException(e)
-            );
-        }
+        Stream.of(
+                Agent.class,
+                ProfileTransformer.class,
+                Bridge.class
+        ).map(Class::getDeclaredMethods)
+                .flatMap(Arrays::stream)
+                .forEach((method) -> this.propagate(method, visited))
+        ;
+        return visited;
     }
 
-    protected ClassNode streamToClass(InputStream input) {
-        ClassNode class_file = new ClassNode(Opcodes.ASM7);
-        try (InputStream stream = input) {
-            ClassReader reader = new ClassReader(stream);
-            reader.accept(class_file, 0);
-            return class_file;
-        } catch (IOException e) {
-            throw new UncheckedIOException(String.format("fail to load class file of %s", input), e);
-        }
-    }
+    protected void propagate(Method method, Set<String> visited) {
+        Stream.concat(
+                // self
+                Stream.of(method),
+                // and super/interfaces
+                Lookups.sameNameAndDescriptor(method)
+        ).parallel().filter((matching) -> visited.add(RefinedClass.signature(method)))
+                // group by owner
+                .collect(Collectors.groupingBy(
+                        Method::getDeclaringClass,
+                        Collectors.groupingBy((reflective) -> String.format(
+                                "%s%s",
+                                method.getName(),
+                                Type.getMethodDescriptor(method)
+                        ))
+                ))
+                .forEach((owner, methods) -> {
+                    try {
+                        ClassNode node = new ClassNode();
+                        ClassReader reader = new ClassReader(owner.getName());
+                        reader.accept(node, 0);
 
-    protected Stream<String> findReferenceMethodSignatures(ClassNode class_node) {
-        return Optional.ofNullable(class_node.methods)
-                .orElseGet(Collections::emptyList)
-                .stream()
-                .flatMap((method) ->
-                        Stream.concat(
-                                // include decleared method
-                                Stream.of(RefinedClass.signature(class_node, method)),
-
-                                // and methods in bytecode
-                                Arrays.stream(
-                                        Optional.ofNullable(method.instructions)
-                                                .map(InsnList::toArray)
-                                                .orElseGet(() -> new AbstractInsnNode[0])
+                        Optional.ofNullable(node.methods)
+                                .orElseGet(Collections::emptyList)
+                                .stream()
+                                // filter if method_node is interested
+                                .filter((method_node) -> Optional.ofNullable(
+                                        methods.get(String.format(
+                                                "%s%s",
+                                                method_node.name,
+                                                method_node.desc
+                                        )))
+                                        .map((match) -> !match.isEmpty())
+                                        .orElse(false)
                                 )
-                                        // filter and cast to method node
-                                        .filter((method_node) -> method_node instanceof MethodInsnNode)
-                                        .map(MethodInsnNode.class::cast)
-                                        .map(RefinedClass::signature)
-                        )
-                )
-                ;
+                                // find method invocation
+                                .map((method_node) -> Optional.ofNullable(method_node.instructions)
+                                        .orElseGet(InsnList::new))
+                                .flatMap((instructions) -> Arrays.stream(instructions.toArray()))
+                                .filter((instruction) -> instruction instanceof MethodInsnNode)
+                                .map(MethodInsnNode.class::cast)
+                                // instruction to method
+                                .flatMap(this::transform)
+                                // propagate
+                                .forEach((reflective) -> this.propagate(reflective, visited))
+                        ;
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(String.format(
+                                "fail to read class bytecode:%s",
+                                owner
+                        ), e);
+                    }
+                });
     }
 
-    protected Stream<JarEntry> fromJarFile(JarFile file) {
-        return StreamSupport.stream(((Iterable<JarEntry>) () -> new Iterator<JarEntry>() {
-            Enumeration<JarEntry> enumeration = file.entries();
-
-            @Override
-            public boolean hasNext() {
-                if (enumeration.hasMoreElements()) {
-                    return true;
-                }
-
-                try {
-                    file.close();
-                } catch (IOException e) {
-                    throw new UncheckedIOException(String.format(
-                            "fail to close jar:%s",
-                            file
-                    ), e);
-                }
-                return false;
-            }
-
-            @Override
-            public JarEntry next() {
-                return enumeration.nextElement();
-            }
-        }).spliterator(), false);
+    protected Stream<Method> transform(MethodInsnNode node) {
+        return this.classes.getOrDefault(node.owner.replace("/", "."),Collections.emptySet())
+                .stream()
+                .map(Class::getDeclaredMethods)
+                .flatMap(Arrays::stream)
+                .filter((method) -> method.getName().equals(node.name))
+                .filter((method) -> Type.getMethodDescriptor(method).equals(node.desc))
+                ;
     }
 }

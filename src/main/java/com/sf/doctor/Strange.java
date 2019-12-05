@@ -3,19 +3,23 @@ package com.sf.doctor;
 import com.sun.tools.attach.AttachNotSupportedException;
 import com.sun.tools.attach.VirtualMachine;
 import com.sun.tools.attach.VirtualMachineDescriptor;
-import sun.jvmstat.monitor.*;
+import sun.jvmstat.monitor.MonitorException;
+import sun.jvmstat.monitor.MonitoredHost;
+import sun.jvmstat.monitor.VmIdentifier;
 import sun.tools.attach.HotSpotVirtualMachine;
 
 import java.io.*;
-import java.net.*;
+import java.net.InetAddress;
+import java.net.StandardSocketOptions;
+import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
-import java.util.*;
-import java.util.concurrent.CompletableFuture;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.LockSupport;
-import java.util.function.*;
-import java.util.stream.Collector;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -73,8 +77,6 @@ public class Strange {
             parameters.put("port", Integer.toString(port));
             parameters.put("jar", agent);
             parameters.put("entry", target);
-            //parameters.put("entry","org.spark_project.jetty.util.thread.QueuedThreadPool$2#run");
-            //parameters.put("entry", "org.apache.spark.deploy.history.HistoryServer#getApplicationInfoList");
 
             String arguments = parameters.entrySet().stream()
                     .map((entry) -> String.format("%s=%s", entry.getKey(), entry.getValue()))
@@ -82,7 +84,6 @@ public class Strange {
             HotSpotVirtualMachine hotspot = (HotSpotVirtualMachine) VirtualMachine.attach(pid);
             hotspot.loadAgent(agent, arguments);
 
-            System.exit(0);
             return this;
         } catch (Throwable throwable) {
             throw new RuntimeException("fail to attach vm", throwable);
@@ -137,34 +138,17 @@ public class Strange {
         }
     }
 
-    protected Optional<String[]> parseFrame(String frame) {
-        String[] rows = frame.split(System.lineSeparator());
-        // group: "ForkJoinPool.commonPool-worker-25" #21 daemon prio=5 os_prio=0 tid=0x00007fbe48222800 nid=0x77fc6 runnable [0x00007fbdf4bcf000]
-        if (!rows[0].contains("os_prio=") || rows.length <= 1) {
-            return Optional.empty();
-        }
-
-        return Optional.of(new String[]{
-                // thread name
-                rows[0].split("os_prio")[0].split("#")[0],
-
-                // state
-                rows[1].split(":")[1],
-
-                // stack frame
-                Arrays.stream(rows)
-                        .skip(2)
-                        // strip \t
-                        .map((row) -> {
-                            if (row.startsWith("\tat")) {
-                                // normal frame
-                                return row;
-                            }
-
-                            // lock states
-                            return row.replaceAll("<.[^<>]*>", "<>");
-                        }).collect(Collectors.joining(System.lineSeparator()))
-        });
+    protected Optional<String> parseFrame(String frame) {
+        return Optional.of(
+                Arrays.stream(frame.split(System.lineSeparator()))
+                        .skip(1)
+                        .map((row) -> Arrays.stream(row.split(" "))
+                                .filter((column) -> !column.contains("="))
+                                .map((column) -> column.replaceAll("0x\\p{XDigit}+", ""))
+                                .collect(Collectors.joining(" "))
+                        )
+                        .collect(Collectors.joining(System.lineSeparator()))
+        );
     }
 
     protected Optional<String> inspectStack(HotSpotVirtualMachine hotspot) {
@@ -182,27 +166,15 @@ public class Strange {
                         ).map(this::parseFrame)
                                 .filter(Optional::isPresent)
                                 .map(Optional::get)
-                                .filter((array) -> !array[2].isEmpty())
-                                .collect(Collectors.groupingBy(
-                                        // group by stack frame
-                                        (array) -> array[2],
-                                        // then by thread state
-                                        Collectors.groupingBy((array) -> array[1], Collectors.summingInt((ignore) -> 1))
-                                ))
+                                .filter((frame)->!frame.isEmpty())
+                                .collect(Collectors.groupingBy(Function.identity(),Collectors.summingInt((drop)->1)))
                                 .entrySet().stream()
-                                .flatMap((entry) -> entry.getValue().entrySet().stream()
-                                        .map((by_state) -> new AbstractMap.SimpleImmutableEntry<>(
-                                                by_state.getValue(),
-                                                String.format(
-                                                        "java.lang.Thread.State:%s (%d)%n%s",
-                                                        by_state.getKey(),
-                                                        by_state.getValue(),
-                                                        entry.getKey()
-                                                ))
-                                        )
-                                )
-                                .sorted(Map.Entry.<Integer, String>comparingByKey().reversed())
-                                .map(Map.Entry::getValue)
+                                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                                .map((entry)->String.format(
+                                        "(%d) %s",
+                                        entry.getValue(),
+                                        entry.getKey()
+                                ))
                                 .collect(Collectors.joining(String.format("%n%n")))
                 ));
             }
@@ -243,6 +215,7 @@ public class Strange {
                         ))
                         .forEach(System.out::println);
                 break;
+
             default:
             case 1:
                 switch (args[0]) {
