@@ -15,6 +15,11 @@ public class StackTracing {
     protected static Map<String, double[]> PROFILE_STAT = new ConcurrentHashMap<>();
     protected static Set<String> ROOT_SET_METHOD = new ConcurrentSkipListSet<>();
 
+    protected static Set<String> SELF = Arrays.stream(Bridge.class.getDeclaredMethods())
+            .map(RefinedClass::signature)
+            .collect(Collectors.toSet());
+
+
     public static void enter(String signature) {
         try {
             unsafeEnter(signature);
@@ -40,7 +45,8 @@ public class StackTracing {
     }
 
     public static boolean shouldTrace(String signature) {
-        return isTargetInCallStack() || inRootSet(signature);
+        return !SELF.contains(signature)
+                && (isTargetInCallStack() || inRootSet(signature));
     }
 
     public static void addToRootSet(String signature) {

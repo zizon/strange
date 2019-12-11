@@ -26,12 +26,16 @@ class UserDefinedAttribute extends Attribute {
         content(content);
     }
 
-    public byte[] content() {
+    public static byte[] content(Attribute attribute) {
         try {
-            return (byte[]) CONTENT_READER.invoke(this);
+            return (byte[]) CONTENT_READER.invoke(attribute);
         } catch (Throwable throwable) {
             throw new RuntimeException("fail to get content");
         }
+    }
+
+    public byte[] content() {
+        return content(this);
     }
 
     public void content(byte[] content) {

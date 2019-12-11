@@ -20,6 +20,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -139,16 +141,19 @@ public class Strange {
     }
 
     protected Optional<String> parseFrame(String frame) {
-        return Optional.of(
-                Arrays.stream(frame.split(System.lineSeparator()))
-                        .skip(1)
-                        .map((row) -> Arrays.stream(row.split(" "))
-                                .filter((column) -> !column.contains("="))
-                                .map((column) -> column.replaceAll("0x\\p{XDigit}+", ""))
-                                .collect(Collectors.joining(" "))
-                        )
-                        .collect(Collectors.joining(System.lineSeparator()))
-        );
+        frame = frame.replaceAll("0x\\p{XDigit}+", "")
+                .replaceAll("=\\d+", "")
+                .replaceAll("#\\d+", "#");
+        Matcher matcher = Pattern.compile("(\"[^\"]*\")").matcher(frame);
+        if (matcher.find()) {
+            String origin = matcher.group(1);
+            frame = frame.replace(origin, String.format(
+                    "%s similar=__COUNTER__",
+                    origin.replaceAll("\\d+","")
+            ));
+        }
+
+        return Optional.of(frame);
     }
 
     protected Optional<String> inspectStack(HotSpotVirtualMachine hotspot) {
@@ -166,15 +171,11 @@ public class Strange {
                         ).map(this::parseFrame)
                                 .filter(Optional::isPresent)
                                 .map(Optional::get)
-                                .filter((frame)->!frame.isEmpty())
-                                .collect(Collectors.groupingBy(Function.identity(),Collectors.summingInt((drop)->1)))
+                                .collect(Collectors.groupingBy(Function.identity(), Collectors.summingInt((drop) -> 1)))
                                 .entrySet().stream()
                                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
-                                .map((entry)->String.format(
-                                        "(%d) %s",
-                                        entry.getValue(),
-                                        entry.getKey()
-                                ))
+                                .map((entry) -> entry.getKey().replace("__COUNTER__", entry.getValue().toString()))
+                                .filter((frame)->frame.contains("similar"))
                                 .collect(Collectors.joining(String.format("%n%n")))
                 ));
             }

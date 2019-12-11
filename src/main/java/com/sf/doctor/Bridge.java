@@ -76,6 +76,7 @@ public class Bridge {
     }
 
     protected static void guardConsume(MethodHandle handle) {
+        /*
         Optional.ofNullable(handle)
                 .ifPresent((delegate) -> {
                     try {
@@ -84,11 +85,12 @@ public class Bridge {
                         throwable.printStackTrace(System.out);
                     }
                 });
-
+*/
         return;
     }
 
     protected static <T> void guardConsume(MethodHandle handle, T input) {
+        /*
         Optional.ofNullable(handle)
                 .ifPresent((delegate) -> {
                     try {
@@ -97,7 +99,7 @@ public class Bridge {
                         throwable.printStackTrace(System.out);
                     }
                 });
-
+*/
         return;
     }
 }

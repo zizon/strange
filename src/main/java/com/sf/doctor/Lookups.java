@@ -1,53 +1,40 @@
 package com.sf.doctor;
 
-
-import org.objectweb.asm.Type;
-
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.util.Arrays;
-import java.util.Objects;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class Lookups {
 
-    public static Stream<Method> sameNameAndDescriptor(Method method) {
-        String descriptor = Type.getMethodDescriptor(method);
-        return collectSuperAndInterface(method.getDeclaringClass())
-                .map(Class::getDeclaredMethods)
-                .flatMap(Arrays::stream)
-                .filter((matching) -> matching.getName().equals(method.getName()))
-                .filter((matching) -> Type.getMethodDescriptor(matching).equals(descriptor))
-                .distinct()
+    protected Map<String, Set<Class<?>>> classes;
+    protected Map<String, Map<Class<?>, Optional<Method>>> class_methods;
+
+    public Lookups(Map<String, Set<Class<?>>> classes) {
+        this.classes = classes;
+        this.class_methods = new ConcurrentHashMap<>();
+    }
+
+    public Stream<Class<?>> upperBoundedBy(Class<?> upper) {
+        return this.classes.values().stream()
+                .flatMap(Set::stream)
+                .filter(upper::isAssignableFrom)
+                .collect(Collectors.toSet())
+                .stream()
                 ;
     }
 
-    public static Stream<Method> collectMethodsWithByteCode(Class<?> clazz) {
-        return Stream.concat(
-                Stream.of(clazz),
-                Lookups.collectSuperAndInterface(clazz)
-        ).map(Class::getDeclaredMethods)
-                .flatMap(Arrays::stream)
-                .filter((method) -> {
-                    if (method.getDeclaringClass().isInterface()) {
-                        return method.isDefault();
-                    }
-
-                    return !method.isBridge()
-                            && (method.getModifiers() & Modifier.NATIVE) == 0
-                            && (method.getModifiers() & Modifier.ABSTRACT) == 0;
-
-                })
-                .distinct();
+    public Stream<Method> declaredMethods(Class<?> clazz) {
+        return Arrays.stream(clazz.getDeclaredMethods());
     }
 
-    public static Stream<Class<?>> collectSuperAndInterface(Class<?> clazz) {
-        return Stream.concat(
-                Arrays.stream(clazz.getInterfaces()),
-                Stream.of(clazz.getSuperclass())
-        ).filter(Objects::nonNull)
-                .flatMap(Lookups::collectSuperAndInterface)
-                .distinct()
-                ;
+    protected Stream<Class<?>> byName(String name) {
+        return this.classes.values().stream().flatMap(Set::stream)
+                .filter((clazz) -> clazz.getName().equals(name))
+                .collect(Collectors.toSet()).stream();
     }
 }
