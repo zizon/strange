@@ -8,14 +8,15 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
-import java.util.*;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 
 public class TestStackTracing {
 
@@ -66,6 +67,20 @@ public class TestStackTracing {
     @Test
     public void testRener() {
         // called:2 average:83,147.50 ns max:110,026.00 ns min:56,269.00 ns
+        StackTracing.addToRootSet("org/apache/spark/deploy/history/HistoryServer#getApplicationList;()Lscala/collection/Iterator;");
+        StackTracing.addToRootSet("org/apache/spark/deploy/history/HistoryServer#getApplicationList");
+        IntStream.range(0,10).forEach((drop)->{
+            StackTracing.enter("org/apache/spark/deploy/history/HistoryServer#getApplicationList;()Lscala/collection/Iterator;");
+            StackTracing.leave("org/apache/spark/deploy/history/HistoryServer#getApplicationList;()Lscala/collection/Iterator;");
+        });
+
+        IntStream.range(0,10).forEach((drop)->{
+            StackTracing.enter("org/apache/spark/deploy/history/HistoryServer#getApplicationList");
+            StackTracing.leave("org/apache/spark/deploy/history/HistoryServer#getApplicationList");
+        });
+
+        StackTracing.print(new PrintWriter(System.out));
+
         String method = "org/apache/spark/deploy/history/HistoryServer#getApplicationList;()Lscala/collection/Iterator;";
         double max = 110026.00;
         double min = 56269.00;

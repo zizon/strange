@@ -7,7 +7,6 @@ import org.objectweb.asm.util.TraceClassVisitor;
 import java.io.*;
 import java.lang.reflect.Method;
 import java.util.*;
-import java.util.stream.StreamSupport;
 
 public class RefinedClass {
 
@@ -26,23 +25,21 @@ public class RefinedClass {
     }
 
     protected ClassNode clazz;
+    protected final byte[] provided;
 
-    public RefinedClass(InputStream stream) {
-        this.clazz = newClassNode(stream);
+    public RefinedClass(byte[] bytecode) {
+        this.provided = bytecode;
+        this.clazz = newClassNode(this.provided);
     }
 
-    public RefinedClass revert() {
-        this.clazz = Optional.ofNullable(clazz.attrs)
+    public byte[] revert() {
+        return Optional.ofNullable(clazz.attrs)
                 .orElseGet(Collections::emptyList)
                 .stream()
                 .filter((attr) -> CLASS_REFINED_MARK.equals(attr.type))
                 .map(UserDefinedAttribute::content)
                 .findAny()
-                .map(ByteArrayInputStream::new)
-                .map(this::newClassNode)
-                .orElse(this.clazz);
-
-        return this;
+                .orElse(this.provided);
     }
 
     public RefinedClass profiling() {
@@ -59,10 +56,7 @@ public class RefinedClass {
     }
 
     public byte[] bytecode() {
-        ClassWriter writer = new ClassWriter(0
-                | ClassWriter.COMPUTE_MAXS
-                | ClassWriter.COMPUTE_FRAMES
-        );
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
         clazz.accept(writer);
         return writer.toByteArray();
     }
@@ -78,13 +72,10 @@ public class RefinedClass {
         }
 
         // copy bytecode
-        ClassWriter writer = new ClassWriter(Opcodes.ASM7);
-        clazz.accept(writer);
-        byte[] bytecode = writer.toByteArray();
         if (clazz.attrs == null) {
             clazz.attrs = new LinkedList<>();
         }
-        clazz.attrs.add(new UserDefinedAttribute(CLASS_REFINED_MARK, bytecode));
+        clazz.attrs.add(new UserDefinedAttribute(CLASS_REFINED_MARK, this.provided));
     }
 
     protected boolean isAnnotated() {
@@ -125,9 +116,12 @@ public class RefinedClass {
     }
 
     protected void refinedMethodNode(MethodNode method) {
-        if ((method.access & Opcodes.ACC_ABSTRACT) != 0) {
+        if ((method.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) {
             return;
         }
+
+        // signature
+        String signature = RefinedClass.signature(this.clazz, method);
 
         Label start = new Label();
         Label end = new Label();
@@ -136,31 +130,61 @@ public class RefinedClass {
         InsnList instructions = new InsnList();
         LabelNode start_instruction = new LabelNode(start);
         LabelNode end_instruction = new LabelNode(end);
-        instructions.add(start_instruction);
-        instructions.add(method.instructions);
-        instructions.add(end_instruction);
 
-        // insert enter
-        String signature = RefinedClass.signature(this.clazz, method);
-        AbstractInsnNode entry_point = start_instruction;
+        // add a generated try-catch-all block
+        List<TryCatchBlockNode> try_catches = Optional.ofNullable(method.tryCatchBlocks)
+                .orElseGet(LinkedList::new);
+        try_catches.add(new TryCatchBlockNode(
+                start_instruction,
+                end_instruction,
+                end_instruction,
+                Type.getInternalName(Throwable.class)
+        ));
+        method.tryCatchBlocks = try_catches;
+
+        // special case for init
+        AbstractInsnNode insert_after = null;
         if (method.name.equals("<init>")) {
             // special case for init
-            for (AbstractInsnNode super_init : instructions) {
+
+            // 1.find this()
+            for (AbstractInsnNode super_init : method.instructions) {
                 // check first method invocation
                 if (super_init instanceof MethodInsnNode) {
-                    // if is super init,delay entry point inject
                     if (super_init.getOpcode() == Opcodes.INVOKESPECIAL
                             && ((MethodInsnNode) super_init).name.equals("<init>")
-                    ) {
-                        entry_point = super_init;
-                        break;
+                            && ((MethodInsnNode) super_init).owner.equals(clazz.name)) {
+                        insert_after = super_init;
                     }
+                }
+            }
 
-                    break;
+            // 2. find super()
+            if (insert_after == null) {
+                for (AbstractInsnNode super_init : method.instructions) {
+                    // check first method invocation
+                    if (super_init instanceof MethodInsnNode) {
+                        if (super_init.getOpcode() == Opcodes.INVOKESPECIAL
+                                && ((MethodInsnNode) super_init).name.equals("<init>")
+                                && ((MethodInsnNode) super_init).owner.equals(clazz.superName)) {
+                            insert_after = super_init;
+                        }
+                    }
                 }
             }
         }
-        instructions.insert(entry_point, generateEnterInstruction(signature));
+
+        if (insert_after != null) {
+            method.instructions.insert(insert_after, start_instruction);
+            method.instructions.insert(start_instruction, generateEnterInstruction(signature));
+        } else {
+            instructions.add(start_instruction);
+            instructions.add(generateEnterInstruction(signature));
+        }
+        instructions.add(method.instructions);
+        instructions.add(end_instruction);
+        instructions.add(generateLeaveInstruction(signature));
+        instructions.add(new InsnNode(Opcodes.ATHROW));
 
         // insert on return/throw point
         Arrays.stream(instructions.toArray())
@@ -180,22 +204,6 @@ public class RefinedClass {
                 })
                 .forEach((return_point) -> instructions.insertBefore(return_point, generateLeaveInstruction(signature)));
 
-        // add a generated try-catch-all block
-        List<TryCatchBlockNode> try_catches = Optional.ofNullable(method.tryCatchBlocks)
-                .orElseGet(LinkedList::new);
-        try_catches.add(new TryCatchBlockNode(
-                start_instruction,
-                end_instruction,
-                end_instruction,
-                Type.getInternalName(Throwable.class)
-        ));
-        method.tryCatchBlocks = try_catches;
-
-        // try catch all handler
-        InsnList catch_all = generateLeaveInstruction(signature);
-        catch_all.add(new InsnNode(Opcodes.ATHROW));
-        instructions.insert(end_instruction, catch_all);
-
         // replace
         method.instructions = instructions;
 
@@ -203,14 +211,10 @@ public class RefinedClass {
         return;
     }
 
-    protected ClassNode newClassNode(InputStream bytecode) {
-        try (InputStream stream = bytecode) {
-            ClassReader reader = new ClassReader(stream);
-            ClassNode clazz = new ClassNode(Opcodes.ASM7);
-            reader.accept(clazz, 0);
-            return clazz;
-        } catch (IOException e) {
-            throw new UncheckedIOException(String.format("fail to read bytecode from stream:%s", bytecode), e);
-        }
+    protected ClassNode newClassNode(byte[] bytecode) {
+        ClassReader reader = new ClassReader(bytecode);
+        ClassNode clazz = new ClassNode(Opcodes.ASM7);
+        reader.accept(clazz, 0);
+        return clazz;
     }
 }

@@ -1,9 +1,5 @@
 package com.sf.doctor;
 
-import org.objectweb.asm.Type;
-import org.objectweb.asm.tree.AbstractInsnNode;
-
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.UncheckedIOException;
@@ -18,10 +14,12 @@ public class ProfileTransformer implements ClassFileTransformer {
 
     protected final Instrumentation instrumentation;
     protected final AgentChannel channel;
+    protected final WhiteList whitelist;
 
     public ProfileTransformer(Instrumentation instrumentation, AgentChannel channel) {
         this.instrumentation = instrumentation;
         this.channel = channel;
+        this.whitelist = new WhiteList();
     }
 
     public void attach(String class_name, String method_name) {
@@ -42,17 +40,12 @@ public class ProfileTransformer implements ClassFileTransformer {
                         : base_classes
                         .flatMap(lookups::upperBoundedBy)
         ).flatMap(lookups::declaredMethods)
-                .map((method) -> String.format(
-                        "%s%s",
-                        method.getName(),
-                        Type.getMethodDescriptor(method)
-                ))
+                .map(RefinedClass::signature)
                 .forEach(StackTracing::addToRootSet)
         ;
 
         // trigger all
-        //TODO
-        this.triggerEach();
+        this.trigger();
     }
 
     public void detach() {
@@ -62,7 +55,7 @@ public class ProfileTransformer implements ClassFileTransformer {
             throw new UncheckedIOException("fail to close channel", e);
         } finally {
             try {
-                this.triggerEach();
+                this.trigger();
             } finally {
                 System.out.println("remove instrumentation");
                 this.instrumentation.removeTransformer(this);
@@ -96,38 +89,32 @@ public class ProfileTransformer implements ClassFileTransformer {
         try {
             return workForClass(classBeingRedefined, classfileBuffer);
         } catch (Throwable throwable) {
-            throwable.printStackTrace(System.out);
             return null;
         }
     }
 
     protected byte[] workForClass(Class<?> clazz, byte[] classfileBuffer) {
-        System.out.println(String.format(
-                "trigger of class:%s %s",
-                clazz,
-                classfileBuffer.length
-        ));
-
         if (this.isClosed()) {
             // closed,revert changes
-            return new RefinedClass(new ByteArrayInputStream(classfileBuffer))
-                    .revert()
-                    .bytecode();
+            return new RefinedClass(classfileBuffer)
+                    .revert();
         }
 
-        return new RefinedClass(new ByteArrayInputStream(classfileBuffer))
+        return new RefinedClass(classfileBuffer)
                 .profiling()
-                //.print(new PrintWriter(System.out, true))
                 .bytecode();
     }
 
     protected void triggerEach() {
         Arrays.stream(this.instrumentation.getAllLoadedClasses())
+                .filter((clazz) -> !whitelist.match(clazz))
                 .filter(instrumentation::isModifiableClass)
                 .filter((clazz) -> !clazz.isSynthetic())
                 // retransform lambda will crash some jvm.
                 // see https://bugs.openjdk.java.net/browse/JDK-8008678
                 .filter((clazz) -> !clazz.getName().startsWith("java.lang.invoke.LambdaForm"))
+                .filter((clazz) -> !clazz.getName().equals(Bridge.class.getName()))
+                .filter((clazz) -> !clazz.getName().equals(StackTracing.class.getName()))
                 //.findAny()
                 .forEach((clazz) -> {
                     //clazz = RefinedClass.class;
@@ -143,6 +130,7 @@ public class ProfileTransformer implements ClassFileTransformer {
         try {
             this.instrumentation.retransformClasses(
                     Arrays.stream(this.instrumentation.getAllLoadedClasses())
+                            .filter((clazz) -> !this.whitelist.match(clazz))
                             .filter(instrumentation::isModifiableClass)
                             .filter((clazz) -> !clazz.isSynthetic())
                             // retransform lambda will crash some jvm.

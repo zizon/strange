@@ -5,6 +5,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.stream.Collector;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -14,11 +15,6 @@ public class StackTracing {
     protected static Map<Long, ConcurrentMap<String, Stack<Long>>> PER_THREAD_METHOD_ENTRY_TIME = new ConcurrentHashMap<>();
     protected static Map<String, double[]> PROFILE_STAT = new ConcurrentHashMap<>();
     protected static Set<String> ROOT_SET_METHOD = new ConcurrentSkipListSet<>();
-
-    protected static Set<String> SELF = Arrays.stream(Bridge.class.getDeclaredMethods())
-            .map(RefinedClass::signature)
-            .collect(Collectors.toSet());
-
 
     public static void enter(String signature) {
         try {
@@ -45,8 +41,7 @@ public class StackTracing {
     }
 
     public static boolean shouldTrace(String signature) {
-        return !SELF.contains(signature)
-                && (isTargetInCallStack() || inRootSet(signature));
+        return isTargetInCallStack() || inRootSet(signature);
     }
 
     public static void addToRootSet(String signature) {
@@ -175,6 +170,7 @@ public class StackTracing {
                         map((row) -> row[column])
                         .map(String::length)
                         .max(Integer::compareTo)
+                        .map((x) -> x > 80 ? 80 : x)
                         .orElse(0)
                 )
                 .toArray();
@@ -188,20 +184,17 @@ public class StackTracing {
                 column_width[3],
                 column_width[4]
         );
-        String bar_format = String.format(
-                "+-%%%ds-+-%%%ds-+-%%%ds-+-%%%ds-+-%%%ds-+",
-                column_width[0],
-                column_width[1],
-                column_width[2],
-                column_width[3],
-                column_width[4]
-        );
 
+        String[] bars = Arrays.stream(column_width)
+                .mapToObj((width) -> IntStream.range(0, width).mapToObj((ignore) -> "-").collect(Collectors.joining()))
+                .toArray(String[]::new);
         String bar = String.format(
-                bar_format,
-                Arrays.stream(column_width)
-                        .mapToObj((width) -> IntStream.range(0, width).mapToObj((ignore) -> "-").collect(Collectors.joining()))
-                        .toArray()
+                "+-%s-+-%s-+-%s-+-%s-+-%s-+",
+                bars[0],
+                bars[1],
+                bars[2],
+                bars[3],
+                bars[4]
         );
 
         Stream.concat(
