@@ -5,7 +5,7 @@ In daily troubleshooting procedure, one would maily start with monitoring progra
 
 Take greys for example.
 
-Assume we had a programe with running slowly.
+Assume we had a program which running slowly.
 1.  use greys to attach to running jvm.
 2.  monitor suspected methods, to find out the costly one.
 3.  strack trace the call stack of methods in 3.
@@ -17,6 +17,8 @@ To simplify/do it automatictly, give a method metioned in 3., one can find neste
 By recursively apply this accounting, a stack down cost map can be infer from this statistics.
 
 This is the exact basic idea of such project.
+
+BUT, it is not recommended to use in production, since it will trigger a bunch class retransformation which retire previous JITed code. 
 
 # Impelemtation
 Said, one wanted to break down costs of `org.apache.spark.deploy.history.HistoryServer getProviderConfig`.
@@ -33,8 +35,14 @@ public getProviderConfig(){
    // signature is the signature use to identify method,
    // in stack
    Bridge.enter(signature);
-   // various codes
-   Bridge.leave(signature);
+   try{
+      // various codes
+      Bridge.leave(signature);
+   }catch(Throwable e){
+      Bridge.leave(signature);
+      throw e;
+   }
+  
 }
 ```
 The`Bridge.enter` marks the start time of execution,and `Bridge.leave`, the end time.
